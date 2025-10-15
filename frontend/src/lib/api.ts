@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { RSSSource, Article, RSSValidateRequest, RSSValidateResponse, AddSourceRequest } from '../types';
+import type { RSSSource, Article, RSSValidateRequest, RSSValidateResponse, AddSourceRequest, UpdateSourceRequest } from '../types';
 
 const API_BASE_URL = 'http://localhost:8000';
 
@@ -30,9 +30,21 @@ export const deleteRSSSource = async (sourceId: string): Promise<void> => {
   await api.delete(`/api/sources/${sourceId}`);
 };
 
+export const updateRSSSource = async (sourceId: string, data: UpdateSourceRequest): Promise<RSSSource> => {
+  const response = await api.patch<RSSSource>(`/api/sources/${sourceId}`, data);
+  return response.data;
+};
+
 // Article APIs
-export const fetchArticles = async (sourceId?: string): Promise<Article[]> => {
-  const params = sourceId ? { source_id: sourceId } : {};
+export const fetchArticles = async (
+  sourceId?: string,
+  limit: number = 50,
+  offset: number = 0
+): Promise<Article[]> => {
+  const params: Record<string, any> = { limit, offset };
+  if (sourceId) {
+    params.source_id = sourceId;
+  }
   const response = await api.get<Article[]>('/api/articles', { params });
   return response.data;
 };

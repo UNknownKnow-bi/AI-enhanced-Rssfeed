@@ -1,10 +1,13 @@
 import feedparser
 import httpx
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from app.services.favicon_fetcher import FaviconFetcher
+from app.services.feed_cache import get_feed_cache
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -13,16 +16,76 @@ class RSSParser:
     """Service to parse and validate RSS feeds"""
 
     @staticmethod
+    def _apply_limit_param(url: str, limit: int = 999) -> str:
+        """
+        Apply limit parameter to RSS feed URL to maximize article retrieval.
+
+        Args:
+            url: Original RSS feed URL
+            limit: Maximum number of articles to request (default: 999)
+
+        Returns:
+            Modified URL with limit parameter added or updated
+
+        Note:
+            - Preserves all existing query parameters
+            - Overwrites existing 'limit' parameter if present
+            - Returns original URL unchanged if parsing fails or URL is invalid
+        """
+        try:
+            # Handle empty or None URLs
+            if not url or not isinstance(url, str):
+                return url
+
+            # Parse the URL
+            parsed = urlparse(url)
+
+            # Only process HTTP/HTTPS URLs
+            if parsed.scheme not in ('http', 'https'):
+                return url
+
+            # Parse existing query parameters
+            query_params = parse_qs(parsed.query, keep_blank_values=True)
+
+            # Add or override the limit parameter
+            query_params['limit'] = [str(limit)]
+
+            # Rebuild query string
+            new_query = urlencode(query_params, doseq=True)
+
+            # Reconstruct the URL with new query string
+            new_url = urlunparse((
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                parsed.params,
+                new_query,
+                parsed.fragment
+            ))
+
+            logger.info(f"Applied limit={limit} parameter: {url} -> {new_url}")
+            return new_url
+
+        except Exception as e:
+            logger.warning(f"Failed to apply limit parameter to URL {url}: {e}. Using original URL.")
+            return url
+
+    @staticmethod
     async def validate_feed(url: str) -> Dict[str, Any]:
         """
-        Validate an RSS feed URL by fetching and parsing it
+        Validate an RSS feed URL by fetching and parsing it.
+
+        Also caches the full feed data (feed info + articles) for later reuse
+        in create_rss_source to avoid duplicate network requests.
 
         Returns:
             dict with keys: valid (bool), title (str), description (str), icon (str), error (str)
         """
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url)
+                # Apply limit parameter to maximize article retrieval
+                fetch_url = RSSParser._apply_limit_param(url)
+                response = await client.get(fetch_url)
                 response.raise_for_status()
 
                 # Parse the feed
@@ -42,9 +105,42 @@ class RSSParser:
                 # Extract feed metadata
                 feed_title = feed.feed.get('title', 'Untitled Feed')
                 feed_description = feed.feed.get('description', '')
+                feed_link = feed.feed.get('link', '')
 
                 # Fetch favicon
                 favicon_url = await FaviconFetcher.fetch_favicon_url(url)
+
+                # Parse all articles from the feed
+                articles = []
+                for entry in feed.entries:
+                    article = RSSParser._parse_entry(entry)
+                    if article:
+                        articles.append(article)
+
+                # Cache the full feed data for later reuse
+                # This avoids duplicate network requests when create_rss_source is called
+                cache = get_feed_cache(
+                    ttl=settings.FEED_CACHE_TTL_SECONDS,
+                    max_size=settings.FEED_CACHE_MAX_SIZE
+                )
+
+                feed_info = {
+                    "title": feed_title,
+                    "description": feed_description,
+                    "link": feed_link,
+                }
+
+                await cache.set(
+                    url=fetch_url,  # Use the URL with limit parameter
+                    feed_info=feed_info,
+                    articles=articles,
+                    favicon_url=favicon_url
+                )
+
+                logger.info(
+                    f"Validated and cached feed: {feed_title} "
+                    f"({len(articles)} articles, TTL={settings.FEED_CACHE_TTL_SECONDS}s)"
+                )
 
                 return {
                     "valid": True,
@@ -76,14 +172,42 @@ class RSSParser:
     @staticmethod
     async def fetch_feed(url: str) -> Optional[Dict[str, Any]]:
         """
-        Fetch and parse an RSS feed, returning articles
+        Fetch and parse an RSS feed, returning articles.
+
+        Checks cache first to avoid duplicate network requests.
+        If cache miss, fetches from network.
 
         Returns:
             dict with keys: feed (dict), articles (list)
         """
         try:
+            # Apply limit parameter to maximize article retrieval
+            fetch_url = RSSParser._apply_limit_param(url)
+
+            # Check cache first
+            cache = get_feed_cache(
+                ttl=settings.FEED_CACHE_TTL_SECONDS,
+                max_size=settings.FEED_CACHE_MAX_SIZE
+            )
+
+            cached_data = await cache.get(fetch_url)
+
+            if cached_data:
+                # Cache hit - return cached data
+                logger.info(
+                    f"Using cached feed data for {fetch_url[:60]}... "
+                    f"({len(cached_data['articles'])} articles)"
+                )
+                return {
+                    "feed": cached_data["feed_info"],
+                    "articles": cached_data["articles"]
+                }
+
+            # Cache miss - fetch from network
+            logger.info(f"Cache miss - fetching from network: {fetch_url[:60]}...")
+
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url)
+                response = await client.get(fetch_url)
                 response.raise_for_status()
 
                 # Parse the feed
@@ -106,6 +230,15 @@ class RSSParser:
                     article = RSSParser._parse_entry(entry)
                     if article:
                         articles.append(article)
+
+                # Cache the fetched data for future requests
+                # (Note: favicon_url not available here, set to None)
+                await cache.set(
+                    url=fetch_url,
+                    feed_info=feed_info,
+                    articles=articles,
+                    favicon_url=None
+                )
 
                 return {
                     "feed": feed_info,
@@ -144,9 +277,9 @@ class RSSParser:
             # Get published date
             pub_date = None
             if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                pub_date = datetime(*entry.published_parsed[:6])
+                pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
             elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-                pub_date = datetime(*entry.updated_parsed[:6])
+                pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
 
             # Try to extract cover image
             cover_image = None

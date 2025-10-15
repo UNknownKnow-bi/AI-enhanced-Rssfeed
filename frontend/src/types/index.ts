@@ -43,3 +43,9 @@ export interface AddSourceRequest {
   title: string;
   category: string;
 }
+
+export interface UpdateSourceRequest {
+  title?: string;
+  icon?: string;
+  category?: string;
+}

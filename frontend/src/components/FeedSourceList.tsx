@@ -5,6 +5,8 @@ import { Button } from "./ui/button";
 import { SourceIcon } from "./SourceIcon";
 import { SourceContextMenu } from "./SourceContextMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { RenameSourceDialog } from "./RenameSourceDialog";
+import { EditIconDialog } from "./EditIconDialog";
 import { useRSSSources, useDeleteSource } from "../hooks/useQueries";
 import { useAppStore } from "../store/useAppStore";
 import { useToast } from "../hooks/useToast";
@@ -24,7 +26,10 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
     "全部": true,
   });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [editIconDialogOpen, setEditIconDialogOpen] = useState(false);
   const [sourceToDelete, setSourceToDelete] = useState<RSSSource | null>(null);
+  const [activeSource, setActiveSource] = useState<RSSSource | null>(null);
 
   // Get unique categories
   const categories = ["全部", ...Array.from(new Set(sources.map((s) => s.category)))];
@@ -44,6 +49,33 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
   const getCategoryUnreadCount = (category: string): number => {
     const categorySources = getSourcesByCategory(category);
     return categorySources.reduce((acc, s) => acc + (s.unread_count || 0), 0);
+  };
+
+  const handleCopyLink = async (source: RSSSource) => {
+    try {
+      await navigator.clipboard.writeText(source.url);
+      toast({
+        title: "已复制",
+        description: "RSS订阅链接已复制到剪贴板",
+        variant: "success",
+      });
+    } catch (error) {
+      toast({
+        title: "复制失败",
+        description: "无法访问剪贴板",
+        variant: "error",
+      });
+    }
+  };
+
+  const handleRenameRequest = (source: RSSSource) => {
+    setActiveSource(source);
+    setRenameDialogOpen(true);
+  };
+
+  const handleEditIconRequest = (source: RSSSource) => {
+    setActiveSource(source);
+    setEditIconDialogOpen(true);
   };
 
   const handleDeleteRequest = (source: RSSSource) => {
@@ -130,6 +162,9 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
                         key={source.id}
                         source={source}
                         onDelete={handleDeleteRequest}
+                        onRename={handleRenameRequest}
+                        onEditIcon={handleEditIconRequest}
+                        onCopyLink={handleCopyLink}
                       >
                         <button
                           onClick={() => setSelectedSourceId(source.id)}
@@ -156,6 +191,20 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
           })}
         </div>
       </ScrollArea>
+
+      {/* Rename Dialog */}
+      <RenameSourceDialog
+        open={renameDialogOpen}
+        onOpenChange={setRenameDialogOpen}
+        source={activeSource}
+      />
+
+      {/* Edit Icon Dialog */}
+      <EditIconDialog
+        open={editIconDialogOpen}
+        onOpenChange={setEditIconDialogOpen}
+        source={activeSource}
+      />
 
       {/* Delete Confirmation Dialog */}
       <ConfirmDialog

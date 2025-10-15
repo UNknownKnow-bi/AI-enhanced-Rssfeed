@@ -1,10 +1,15 @@
 from sqlalchemy import Column, String, DateTime, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from app.core.database import Base
+
+
+def get_utc_now():
+    """Return current UTC time with timezone info"""
+    return datetime.now(timezone.utc)
 
 
 class RSSSource(Base):
@@ -18,8 +23,8 @@ class RSSSource(Base):
     icon = Column(String, nullable=True, default="📰")
     category = Column(String, nullable=False, default="未分类")
     unread_count = Column(Integer, default=0)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    last_fetched = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now, nullable=False)
+    last_fetched = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     user = relationship("User", back_populates="rss_sources")

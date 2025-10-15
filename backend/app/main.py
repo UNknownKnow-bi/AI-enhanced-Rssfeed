@@ -34,10 +34,62 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="RSS Feed API",
-    description="Backend API for RSS Feed Reader with AI",
+    title="RSS Feed Reader API",
+    description="""
+## RSS Feed Aggregator Backend API
+
+A comprehensive REST API for managing RSS feed subscriptions and articles.
+
+### Features
+
+* **RSS Source Management**: Add, update, rename, and delete RSS feed sources
+* **Article Aggregation**: Automatic fetching and storage of articles with deduplication
+* **Custom Icons**: Support for emoji and image URL icons
+* **Category Organization**: Organize sources by custom categories
+* **Intelligent Caching**: Short-term cache to avoid duplicate feed fetching
+* **Background Scheduler**: Automatic RSS feed updates every 15 minutes
+* **Rich Metadata**: Favicon extraction, article content, cover images
+
+### API Sections
+
+* **RSS Sources** - Manage RSS feed subscriptions (add, list, update, delete)
+* **Articles** - Access and manage fetched articles
+* **Validation** - Validate RSS feed URLs before adding
+
+### Authentication
+
+Currently uses a default user ID. Full authentication system coming soon.
+
+### Rate Limiting
+
+Background fetching includes 2-minute delays between sources to respect rate limits.
+    """,
     version="1.0.0",
     lifespan=lifespan,
+    contact={
+        "name": "RSS Feed Reader API Support",
+        "url": "https://github.com/yourusername/rssfeed",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_tags=[
+        {
+            "name": "RSS Sources",
+            "description": "Operations for managing RSS feed subscriptions. Add new sources, update metadata (title, icon, category), and delete sources."
+        },
+        {
+            "name": "Articles",
+            "description": "Operations for accessing and managing aggregated articles from RSS feeds."
+        },
+        {
+            "name": "Validation",
+            "description": "Validate RSS feed URLs before adding them as sources."
+        }
+    ]
 )
 
 # Configure CORS

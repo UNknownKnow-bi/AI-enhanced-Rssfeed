@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -90,7 +90,7 @@ class RSSScheduler:
                 return
 
             # Update source last_fetched time
-            source.last_fetched = datetime.utcnow()
+            source.last_fetched = datetime.now(timezone.utc)
 
             # Store new articles
             new_articles_count = 0

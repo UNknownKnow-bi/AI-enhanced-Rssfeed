@@ -18,6 +18,46 @@ class RSSSourceCreate(BaseModel):
     category: str = "未分类"
 
 
+class RSSSourceUpdate(BaseModel):
+    """
+    Schema for updating RSS source fields.
+
+    All fields are optional - provide only the fields you want to update.
+    At least one field must be provided.
+    """
+    title: Optional[str] = None
+    icon: Optional[str] = None
+    category: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "examples": [
+                {
+                    "title": "Hacker News - Tech Stories",
+                    "description": "Update only the title"
+                },
+                {
+                    "icon": "🚀",
+                    "description": "Update only the icon with an emoji"
+                },
+                {
+                    "icon": "https://example.com/icon.png",
+                    "description": "Update only the icon with an image URL"
+                },
+                {
+                    "category": "Technology",
+                    "description": "Update only the category"
+                },
+                {
+                    "title": "My Favorite Blog",
+                    "icon": "📰",
+                    "category": "Blogs",
+                    "description": "Update multiple fields at once"
+                }
+            ]
+        }
+
+
 class RSSSourceResponse(RSSSourceBase):
     id: UUID
     user_id: UUID

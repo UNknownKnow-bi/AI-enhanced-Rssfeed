@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { ArticleCard } from "./ArticleCard";
 import { ScrollArea } from "./ui/scroll-area";
 import { useArticles } from "../hooks/useQueries";
@@ -5,7 +6,41 @@ import { useAppStore } from "../store/useAppStore";
 
 export function ArticleList() {
   const { selectedSourceId, selectedArticleId, setSelectedArticleId } = useAppStore();
-  const { data: articles = [], isLoading } = useArticles(selectedSourceId || undefined);
+  const {
+    data,
+    isLoading,
+    isFetchingNextPage,
+    hasNextPage,
+    fetchNextPage
+  } = useArticles(selectedSourceId || undefined);
+
+  // Flatten paginated data
+  const articles = data?.pages.flat() ?? [];
+
+  // Intersection Observer for infinite scroll
+  const observerTarget = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasNextPage && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { threshold: 1.0 }
+    );
+
+    const currentTarget = observerTarget.current;
+    if (currentTarget) {
+      observer.observe(currentTarget);
+    }
+
+    return () => {
+      if (currentTarget) {
+        observer.unobserve(currentTarget);
+      }
+    };
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   if (isLoading) {
     return (
@@ -31,14 +66,33 @@ export function ArticleList() {
               <p className="text-xs mt-2">添加RSS源后，文章将自动同步</p>
             </div>
           ) : (
-            articles.map((article) => (
-              <ArticleCard
-                key={article.id}
-                article={article}
-                isSelected={selectedArticleId === article.id}
-                onClick={() => setSelectedArticleId(article.id)}
-              />
-            ))
+            <>
+              {articles.map((article) => (
+                <ArticleCard
+                  key={article.id}
+                  article={article}
+                  isSelected={selectedArticleId === article.id}
+                  onClick={() => setSelectedArticleId(article.id)}
+                />
+              ))}
+
+              {/* Intersection Observer Target */}
+              <div ref={observerTarget} className="h-4" />
+
+              {/* Loading indicator */}
+              {isFetchingNextPage && (
+                <div className="p-4 text-center">
+                  <p className="text-sm text-muted-foreground">加载更多...</p>
+                </div>
+              )}
+
+              {/* End of list indicator */}
+              {!hasNextPage && articles.length > 0 && (
+                <div className="p-4 text-center">
+                  <p className="text-xs text-muted-foreground">已加载全部文章</p>
+                </div>
+              )}
+            </>
           )}
         </div>
       </ScrollArea>

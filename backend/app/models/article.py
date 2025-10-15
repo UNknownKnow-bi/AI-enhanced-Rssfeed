@@ -1,10 +1,15 @@
 from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from app.core.database import Base
+
+
+def get_utc_now():
+    """Return current UTC time with timezone info"""
+    return datetime.now(timezone.utc)
 
 
 class Article(Base):
@@ -18,9 +23,9 @@ class Article(Base):
     description = Column(Text, nullable=True)
     content = Column(Text, nullable=True)
     cover_image = Column(String, nullable=True)
-    pub_date = Column(DateTime, nullable=True)
+    pub_date = Column(DateTime(timezone=True), nullable=True)
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now, nullable=False)
 
     # Relationships
     source = relationship("RSSSource", back_populates="articles")

@@ -1,6 +1,6 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as api from '../lib/api';
-import type { AddSourceRequest } from '../types';
+import type { AddSourceRequest, UpdateSourceRequest } from '../types';
 
 // Query keys
 export const queryKeys = {
@@ -23,6 +23,18 @@ export const useCreateSource = () => {
 
   return useMutation({
     mutationFn: (data: AddSourceRequest) => api.createRSSSource(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.sources });
+    },
+  });
+};
+
+export const useUpdateSource = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ sourceId, data }: { sourceId: string; data: UpdateSourceRequest }) =>
+      api.updateRSSSource(sourceId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.sources });
     },
@@ -74,12 +86,23 @@ export const useValidateURL = () => {
   });
 };
 
-// Articles
+// Articles - Infinite Query for Pagination
+const ARTICLES_PER_PAGE = 50;
+
 export const useArticles = (sourceId?: string) => {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: queryKeys.articles(sourceId),
-    queryFn: () => api.fetchArticles(sourceId),
+    queryFn: ({ pageParam = 0 }) => api.fetchArticles(sourceId, ARTICLES_PER_PAGE, pageParam),
+    getNextPageParam: (lastPage, allPages) => {
+      // If the last page has fewer articles than the page size, we've reached the end
+      if (lastPage.length < ARTICLES_PER_PAGE) {
+        return undefined;
+      }
+      // Otherwise, return the offset for the next page
+      return allPages.length * ARTICLES_PER_PAGE;
+    },
     refetchInterval: 60000, // Refetch every minute
+    initialPageParam: 0,
   });
 };
 
