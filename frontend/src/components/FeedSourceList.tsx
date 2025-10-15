@@ -4,8 +4,10 @@ import { ScrollArea } from "./ui/scroll-area";
 import { Button } from "./ui/button";
 import { SourceIcon } from "./SourceIcon";
 import { SourceContextMenu } from "./SourceContextMenu";
+import { CategoryContextMenu } from "./CategoryContextMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { RenameSourceDialog } from "./RenameSourceDialog";
+import { RenameCategoryDialog } from "./RenameCategoryDialog";
 import { EditIconDialog } from "./EditIconDialog";
 import { useRSSSources, useDeleteSource } from "../hooks/useQueries";
 import { useAppStore } from "../store/useAppStore";
@@ -18,7 +20,7 @@ interface FeedSourceListProps {
 
 export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
   const { data: sources = [], isLoading } = useRSSSources();
-  const { selectedSourceId, setSelectedSourceId } = useAppStore();
+  const { selectedSourceId, selectedCategory, setSelectedSourceId, setSelectedCategory } = useAppStore();
   const deleteMutation = useDeleteSource();
   const { toast } = useToast();
 
@@ -28,17 +30,26 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [renameDialogOpen, setRenameDialogOpen] = useState(false);
   const [editIconDialogOpen, setEditIconDialogOpen] = useState(false);
+  const [renameCategoryDialogOpen, setRenameCategoryDialogOpen] = useState(false);
   const [sourceToDelete, setSourceToDelete] = useState<RSSSource | null>(null);
   const [activeSource, setActiveSource] = useState<RSSSource | null>(null);
+  const [categoryToRename, setCategoryToRename] = useState<string | null>(null);
 
-  // Get unique categories
-  const categories = ["全部", ...Array.from(new Set(sources.map((s) => s.category)))];
+  // Get unique categories (exclude "全部" from regular categories)
+  const realCategories = Array.from(new Set(sources.map((s) => s.category)));
 
   const toggleCategory = (category: string) => {
     setExpandedCategories((prev) => ({
       ...prev,
       [category]: !prev[category],
     }));
+  };
+
+  const handleCategoryClick = (category: string) => {
+    // Toggle expansion
+    toggleCategory(category);
+    // Set selected category (null for "全部" means show all)
+    setSelectedCategory(category === "全部" ? null : category);
   };
 
   const getSourcesByCategory = (category: string): RSSSource[] => {
@@ -81,6 +92,11 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
   const handleDeleteRequest = (source: RSSSource) => {
     setSourceToDelete(source);
     setDeleteDialogOpen(true);
+  };
+
+  const handleRenameCategoryRequest = (category: string) => {
+    setCategoryToRename(category);
+    setRenameCategoryDialogOpen(true);
   };
 
   const handleDeleteConfirm = async () => {
@@ -131,64 +147,103 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
       </div>
       <ScrollArea className="flex-1 h-0">
         <div className="p-2">
-          {categories.map((category) => {
-            const categorySource = getSourcesByCategory(category);
-            const isExpanded = expandedCategories[category] ?? false;
-            const unreadCount = getCategoryUnreadCount(category);
+          {/* Level 1: "全部" as top-level parent */}
+          <div className="mb-2">
+            <button
+              onClick={() => handleCategoryClick("全部")}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                selectedCategory === null && selectedSourceId === null
+                  ? "bg-accent"
+                  : "hover:bg-accent/50"
+              }`}
+            >
+              {expandedCategories["全部"] ? (
+                <ChevronDown className="w-4 h-4" />
+              ) : (
+                <ChevronRight className="w-4 h-4" />
+              )}
+              <span className="flex-1 text-left text-sm font-medium">全部</span>
+              {getCategoryUnreadCount("全部") > 0 && (
+                <span className="text-muted-foreground text-xs">
+                  {getCategoryUnreadCount("全部")}
+                </span>
+              )}
+            </button>
 
-            return (
-              <div key={category} className="mb-2">
-                <button
-                  onClick={() => toggleCategory(category)}
-                  className="w-full flex items-center gap-2 px-3 py-2 hover:bg-accent rounded-lg transition-colors"
-                >
-                  {isExpanded ? (
-                    <ChevronDown className="w-4 h-4" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4" />
-                  )}
-                  <span className="flex-1 text-left text-sm font-medium">{category}</span>
-                  {unreadCount > 0 && (
-                    <span className="text-muted-foreground text-xs">
-                      {unreadCount}
-                    </span>
-                  )}
-                </button>
+            {/* Level 2: Categories nested under "全部" */}
+            {expandedCategories["全部"] && (
+              <div className="ml-4 mt-1">
+                {realCategories.map((category) => {
+                  const categorySource = getSourcesByCategory(category);
+                  const isExpanded = expandedCategories[category] ?? false;
+                  const unreadCount = getCategoryUnreadCount(category);
 
-                {isExpanded && category !== "全部" && (
-                  <div className="ml-2 mt-1">
-                    {categorySource.map((source) => (
-                      <SourceContextMenu
-                        key={source.id}
-                        source={source}
-                        onDelete={handleDeleteRequest}
-                        onRename={handleRenameRequest}
-                        onEditIcon={handleEditIconRequest}
-                        onCopyLink={handleCopyLink}
+                  return (
+                    <div key={category} className="mb-1">
+                      <CategoryContextMenu
+                        category={category}
+                        onRename={handleRenameCategoryRequest}
                       >
                         <button
-                          onClick={() => setSelectedSourceId(source.id)}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors text-sm ${
-                            selectedSourceId === source.id
+                          onClick={() => handleCategoryClick(category)}
+                          className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                            selectedCategory === category
                               ? "bg-accent"
                               : "hover:bg-accent/50"
                           }`}
                         >
-                          <SourceIcon icon={source.icon} size="sm" />
-                          <span className="flex-1 text-left truncate">{source.title}</span>
-                          {source.unread_count > 0 && (
-                            <span className="text-xs text-muted-foreground">
-                              {source.unread_count}
+                          {isExpanded ? (
+                            <ChevronDown className="w-4 h-4" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4" />
+                          )}
+                          <span className="flex-1 text-left text-sm font-medium">{category}</span>
+                          {unreadCount > 0 && (
+                            <span className="text-muted-foreground text-xs">
+                              {unreadCount}
                             </span>
                           )}
                         </button>
-                      </SourceContextMenu>
-                    ))}
-                  </div>
-                )}
+                      </CategoryContextMenu>
+
+                      {/* Level 3: Sources nested under each category */}
+                      {isExpanded && (
+                        <div className="ml-4 mt-1">
+                          {categorySource.map((source) => (
+                            <SourceContextMenu
+                              key={source.id}
+                              source={source}
+                              onDelete={handleDeleteRequest}
+                              onRename={handleRenameRequest}
+                              onEditIcon={handleEditIconRequest}
+                              onCopyLink={handleCopyLink}
+                            >
+                              <button
+                                onClick={() => setSelectedSourceId(source.id)}
+                                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors text-sm ${
+                                  selectedSourceId === source.id
+                                    ? "bg-accent"
+                                    : "hover:bg-accent/50"
+                                }`}
+                              >
+                                <SourceIcon icon={source.icon} size="sm" />
+                                <span className="flex-1 text-left truncate">{source.title}</span>
+                                {source.unread_count > 0 && (
+                                  <span className="text-xs text-muted-foreground">
+                                    {source.unread_count}
+                                  </span>
+                                )}
+                              </button>
+                            </SourceContextMenu>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            );
-          })}
+            )}
+          </div>
         </div>
       </ScrollArea>
 
@@ -204,6 +259,14 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
         open={editIconDialogOpen}
         onOpenChange={setEditIconDialogOpen}
         source={activeSource}
+      />
+
+      {/* Rename Category Dialog */}
+      <RenameCategoryDialog
+        open={renameCategoryDialogOpen}
+        onOpenChange={setRenameCategoryDialogOpen}
+        category={categoryToRename}
+        sources={sources}
       />
 
       {/* Delete Confirmation Dialog */}

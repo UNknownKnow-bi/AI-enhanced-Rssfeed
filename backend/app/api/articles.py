@@ -14,20 +14,25 @@ router = APIRouter(prefix="/api", tags=["articles"])
 @router.get("/articles", response_model=List[ArticleListResponse])
 async def list_articles(
     source_id: Optional[UUID] = Query(None, description="Filter by RSS source ID"),
+    category: Optional[str] = Query(None, description="Filter by category"),
     limit: int = Query(50, ge=1, le=100, description="Number of articles to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List articles with optional filtering by source
+    List articles with optional filtering by source or category.
+    Priority: source_id takes precedence over category if both are provided.
     """
     query = select(Article, RSSSource).join(
         RSSSource, Article.source_id == RSSSource.id
     )
 
-    # Filter by source if provided
+    # Filter by source if provided (takes priority over category)
     if source_id:
         query = query.where(Article.source_id == source_id)
+    # Otherwise filter by category if provided
+    elif category:
+        query = query.where(RSSSource.category == category)
 
     # Order by publication date (newest first)
     query = query.order_by(Article.pub_date.desc().nulls_last(), Article.created_at.desc())

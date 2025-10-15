@@ -80,7 +80,7 @@ export function EditIconDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[425px] overflow-hidden">
         <DialogHeader>
           <DialogTitle>自定义图标</DialogTitle>
           <DialogDescription>
@@ -88,19 +88,21 @@ export function EditIconDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4 overflow-hidden">
           {/* Icon Preview */}
           {newIcon.trim() && (
-            <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
-              <div className="text-sm text-muted-foreground">预览:</div>
-              <SourceIcon icon={newIcon.trim()} size="md" />
-              <div className="flex-1 truncate text-sm text-muted-foreground">
-                {newIcon.trim()}
+            <div className="flex items-center gap-3 p-3 bg-muted rounded-lg overflow-hidden">
+              <div className="text-sm text-muted-foreground flex-shrink-0">预览:</div>
+              <div className="flex-shrink-0">
+                <SourceIcon icon={newIcon.trim()} size="md" />
+              </div>
+              <div className="flex-1 min-w-0 text-sm text-muted-foreground overflow-hidden">
+                <div className="truncate">{newIcon.trim()}</div>
               </div>
             </div>
           )}
 
-          <div className="space-y-2">
+          <div className="space-y-2 overflow-hidden">
             <Label htmlFor="new-icon">图标</Label>
             <Input
               id="new-icon"
@@ -109,6 +111,7 @@ export function EditIconDialog({
               value={newIcon}
               onChange={(e) => setNewIcon(e.target.value)}
               autoFocus
+              className="w-full min-w-0"
             />
             <p className="text-xs text-muted-foreground">
               支持 emoji 字符（例如：🚀 📰 🎯）或图标 URL

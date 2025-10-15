@@ -5,7 +5,7 @@ import type { AddSourceRequest, UpdateSourceRequest } from '../types';
 // Query keys
 export const queryKeys = {
   sources: ['sources'] as const,
-  articles: (sourceId?: string) => ['articles', sourceId] as const,
+  articles: (sourceId?: string, category?: string) => ['articles', sourceId, category] as const,
   article: (articleId: string) => ['article', articleId] as const,
 };
 
@@ -89,10 +89,10 @@ export const useValidateURL = () => {
 // Articles - Infinite Query for Pagination
 const ARTICLES_PER_PAGE = 50;
 
-export const useArticles = (sourceId?: string) => {
+export const useArticles = (sourceId?: string, category?: string) => {
   return useInfiniteQuery({
-    queryKey: queryKeys.articles(sourceId),
-    queryFn: ({ pageParam = 0 }) => api.fetchArticles(sourceId, ARTICLES_PER_PAGE, pageParam),
+    queryKey: queryKeys.articles(sourceId, category),
+    queryFn: ({ pageParam = 0 }) => api.fetchArticles(sourceId, category, ARTICLES_PER_PAGE, pageParam),
     getNextPageParam: (lastPage, allPages) => {
       // If the last page has fewer articles than the page size, we've reached the end
       if (lastPage.length < ARTICLES_PER_PAGE) {
@@ -120,6 +120,79 @@ export const useMarkAsRead = () => {
   return useMutation({
     mutationFn: (articleId: string) => api.markArticleAsRead(articleId),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['articles'] });
+    },
+  });
+};
+
+// Category Rename - Batch update all sources in a category
+export const useRenameCategoryMutation = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      oldCategory,
+      newCategory,
+      sourceIds,
+    }: {
+      oldCategory: string;
+      newCategory: string;
+      sourceIds: string[];
+    }) => {
+      // Batch update all sources with retry logic
+      const updateSource = async (sourceId: string, retryCount = 0): Promise<any> => {
+        try {
+          return await api.updateRSSSource(sourceId, { category: newCategory });
+        } catch (error) {
+          // Retry once if failed
+          if (retryCount < 1) {
+            return await updateSource(sourceId, retryCount + 1);
+          }
+          throw error;
+        }
+      };
+
+      const results = await Promise.allSettled(
+        sourceIds.map((id) => updateSource(id))
+      );
+
+      // Check for failures
+      const failures = results.filter((r) => r.status === 'rejected');
+      if (failures.length > 0) {
+        throw new Error(`${failures.length} 个源更新失败`);
+      }
+
+      return results;
+    },
+
+    // Optimistic update
+    onMutate: async ({ oldCategory, newCategory, sourceIds }) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.sources });
+
+      const previousSources = queryClient.getQueryData(queryKeys.sources);
+
+      // Optimistically update cache
+      queryClient.setQueryData(queryKeys.sources, (old: any) =>
+        old?.map((source: any) =>
+          sourceIds.includes(source.id)
+            ? { ...source, category: newCategory }
+            : source
+        )
+      );
+
+      return { previousSources };
+    },
+
+    // Rollback on error
+    onError: (err, variables, context) => {
+      if (context?.previousSources) {
+        queryClient.setQueryData(queryKeys.sources, context.previousSources);
+      }
+    },
+
+    // Invalidate on success
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.sources });
       queryClient.invalidateQueries({ queryKey: ['articles'] });
     },
   });

@@ -59,12 +59,19 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
   - Increases Reddit feeds from 25 → 100 articles (300% improvement)
 
 **View Sources**
-- Left panel with collapsible categories
-- Unread article count per source
+- **Hierarchical three-level structure**:
+  - **Level 1**: "全部" (All) - Top-level parent category
+  - **Level 2**: Categories (Tech, Sports, etc.) - Nested under "全部" with indentation
+  - **Level 3**: Individual sources - Nested under categories with further indentation
+- **Category-based filtering**: Click any category to view all articles from sources in that category
+- **"全部" (All)**: Click to show all articles; expand/collapse to show/hide category tree
+- **Context menus**: Right-click (or Ctrl+Click) on categories and sources for quick actions
+- Unread article count per source and per category
+- Visual indication of selected category or source with highlight
 - Favicon/emoji icons for visual identification
 - Automatic favicon fetching from website domains
 
-**Context Menu Operations**
+**Source Context Menu Operations**
 
 Right-click any RSS source to access quick actions:
 
@@ -98,11 +105,33 @@ Right-click any RSS source to access quick actions:
    - User ownership validation (403 if not authorized)
    - Returns deletion statistics (articles deleted count)
 
+**Category Context Menu Operations**
+
+Right-click (or Ctrl+Click) any category to access quick actions:
+
+1. **重命名 (Rename Category)**
+   - Dialog opens with current category name pre-filled
+   - Input validation (non-empty, whitespace trimmed, no duplicates)
+   - **Batch update**: Renames all sources in the category
+   - **Retry logic**: Automatically retries failed updates once
+   - **Optimistic updates**: UI updates immediately, rolls back on failure
+   - **Error handling**:
+     - Duplicate name check: "类别名称已存在"
+     - Empty name validation: "类别名称不能为空"
+     - Network errors: Automatic retry, then rollback if still failing
+   - Generic loading state: "更新中..."
+   - Toast notifications confirm success/failure
+   - Note: "全部" (All) category has no context menu (special category)
+
 **Technical Implementation:**
 - **RSS Parser Service** ([rss_parser.py](backend/app/services/rss_parser.py)): Async fetching with httpx, RSS 2.0 parsing, URL parameter manipulation
 - **RSS Service Layer** ([rss_service.py](backend/app/services/rss_service.py)): Business logic, ownership validation, deletion statistics
-- **Components**: `AddSourceDialog`, `FeedSourceList`, `SourceContextMenu`, `ConfirmDialog`, `RenameSourceDialog`, `EditIconDialog`
-- **API**: `PATCH /api/sources/{source_id}` - Partial updates for title, icon, and category
+- **State Management** ([useAppStore.ts](frontend/src/store/useAppStore.ts)): Coordinated selection of source/category (mutually exclusive)
+- **Components**:
+  - `AddSourceDialog`, `FeedSourceList`, `SourceContextMenu`, `CategoryContextMenu`
+  - `ConfirmDialog`, `RenameSourceDialog`, `RenameCategoryDialog`, `EditIconDialog`
+- **Hooks**: `useRenameCategoryMutation` - Batch category rename with optimistic updates and retry logic
+- **API**: `PATCH /api/sources/{source_id}` - Partial updates for title, icon, and category (used for both source and category operations)
 
 ---
 
@@ -117,11 +146,13 @@ Right-click any RSS source to access quick actions:
 - Responsive height constraints with flexbox
 
 **Article List (Middle Panel)**
+- **Multi-mode filtering**: Display articles by individual source, category, or all articles
 - Infinite scroll pagination (50 articles per page)
 - Intersection Observer auto-loads when scrolling near bottom
 - Shows source icon, title, timestamp
 - Loading indicator ("加载更多...") and end message ("已加载全部文章")
 - No manual "load more" button needed
+- Sorted by publication date (newest first) across all filtering modes
 
 **Article Detail View (Right Panel)**
 - Full sanitized HTML content rendering
@@ -131,8 +162,9 @@ Right-click any RSS source to access quick actions:
 - AI summary placeholder for future enhancement
 
 **Technical Implementation:**
-- **Backend**: Pagination API with `limit`/`offset` (default 50, max 100)
+- **Backend**: Pagination API with `limit`/`offset` (default 50, max 100), category filtering support
 - **Frontend**: `useInfiniteQuery` from TanStack Query, Intersection Observer
+- **State**: Coordinated source/category selection with cache invalidation
 - **Components**: `ArticleList`, `ArticleDetail`, `SourceIcon`
 - **Styling**: Tailwind prose classes, custom resize handles
 
@@ -189,7 +221,83 @@ Right-click any RSS source to access quick actions:
 
 ---
 
-### 5. Intelligent Feed Caching
+### 5. Category-Based Article Filtering
+
+**Hierarchical Three-Level Navigation System**
+- **Visual Structure**: Tree-like layout with clear parent-child relationships
+  ```
+  全部 ▼                      (Level 1 - Root parent, no indent)
+    Tech ▼                    (Level 2 - Category, ml-4 indent)
+      ├─ Source 1             (Level 3 - Source, ml-8 total indent)
+      └─ Source 2
+    Sports ▼                  (Level 2 - Category, ml-4 indent)
+      └─ Source 3
+  ```
+- Visual feedback shows currently active filter
+- Mutually exclusive selection (selecting one clears others)
+
+**User Interaction Flow**
+
+1. **View All Articles ("全部")**
+   - Click "全部" category button to toggle selection AND expansion
+   - When expanded: Shows full category tree underneath with indentation
+   - When selected: Displays all articles from all sources sorted by publication date
+   - Default view when no selection is made
+   - Useful for discovering latest content across all feeds
+
+2. **View Category Articles**
+   - Nested under "全部" with indentation (Level 2)
+   - Click any category name (e.g., "Tech", "Sports", "News")
+   - Displays aggregated articles from all sources within that category
+   - Category button highlighted with active state
+   - Expands/collapses source list within category simultaneously
+   - Unread count shown at category level
+
+3. **View Source Articles**
+   - Nested under categories with further indentation (Level 3)
+   - Click individual source within expanded category
+   - Displays articles only from that specific source
+   - Source button highlighted, category selection cleared
+   - Maintains category expansion state for easy navigation
+
+**State Coordination**
+- `selectedCategory`: Tracks active category filter (null = "全部")
+- `selectedSourceId`: Tracks active source filter
+- Setting one automatically clears the other (mutually exclusive)
+- Setting source also clears `selectedArticleId` for clean navigation
+
+**Backend Implementation**
+- API endpoint supports dual filtering: `/api/articles?source_id={uuid}&category={name}`
+- Query priority: `source_id` > `category` > all articles
+- Single SQL query with conditional WHERE clauses
+- Efficient pagination maintained across all filtering modes
+- Consistent sorting by publication date regardless of filter
+
+**Frontend Implementation**
+- Zustand store manages coordinated state transitions
+- TanStack Query cache keys include both `sourceId` and `category`
+- Separate cache buckets for each filter combination
+- Automatic cache invalidation on source mutations
+- Visual indicators distinguish between category/source selection
+
+**Performance Considerations**
+- Category filtering aggregates articles from multiple sources efficiently
+- Database-level filtering (not client-side merge) ensures scalability
+- Pagination works seamlessly across all filtering modes
+- Cache strategy prevents unnecessary refetches when switching filters
+
+**Technical Files**
+- **Backend**: [articles.py:14-63](backend/app/api/articles.py#L14-L63) - Category filtering logic
+- **Store**: [useAppStore.ts](frontend/src/store/useAppStore.ts) - Coordinated state management
+- **API**: [api.ts:39-53](frontend/src/lib/api.ts#L39-L53) - Category parameter support
+- **Hooks**: [useQueries.ts:92-107](frontend/src/hooks/useQueries.ts#L92-L107) - Query key with category
+- **Components**:
+  - [FeedSourceList.tsx:35-232](frontend/src/components/FeedSourceList.tsx#L35-L232) - Hierarchical tree rendering with three levels
+  - [ArticleList.tsx:8-15](frontend/src/components/ArticleList.tsx#L8-L15) - Multi-mode filtering support
+
+---
+
+### 6. Intelligent Feed Caching
 
 **RSS Validation Cache**
 - In-memory TTL cache to avoid duplicate feed fetching
@@ -239,7 +347,7 @@ Right-click any RSS source to access quick actions:
 
 ---
 
-### 6. Real-Time Updates & Performance
+### 7. Real-Time Updates & Performance
 
 **Auto-Refresh Mechanism**
 - Frontend queries update every 60 seconds
@@ -332,10 +440,15 @@ npm run dev
 
 ### Article Endpoints
 
-**GET `/api/articles?source_id={uuid}`**
-- List articles (optionally filtered by source)
+**GET `/api/articles?source_id={uuid}&category={string}`**
+- List articles with optional filtering by source or category
+- **Query parameters**:
+  - `source_id`: Filter by specific RSS source (UUID)
+  - `category`: Filter by category name (string)
+  - Priority: `source_id` takes precedence over `category` if both provided
+  - Omit both to retrieve all articles
 - Supports pagination: `limit` (default 50, max 100), `offset`
-- Response: Array of article objects with source info
+- Response: Array of article objects with source info, sorted by publication date (newest first)
 
 **GET `/api/articles/{article_id}`**
 - Get full article details
@@ -387,10 +500,13 @@ For detailed API documentation with examples, see [OPENAPI_DOCUMENTATION.md](../
 
 ### Viewing Articles
 1. Frontend loads sources on mount
-2. User selects source → `GET /api/articles?source_id={uuid}`
+2. **Three selection modes**:
+   - Click "全部" category → `GET /api/articles` (all articles)
+   - Click specific category → `GET /api/articles?category={name}` (articles from sources in that category)
+   - Click individual source → `GET /api/articles?source_id={uuid}` (articles from one source)
 3. Articles load with infinite scroll (50 per page)
 4. User selects article → `GET /api/articles/{article_id}`
-5. Auto-refresh every 60 seconds
+5. Auto-refresh every 60 seconds with cache coordination
 
 ### Context Menu Operations
 
@@ -427,6 +543,19 @@ For detailed API documentation with examples, see [OPENAPI_DOCUMENTATION.md](../
 6. Background task runs cleanup
 7. Success toast appears (or error toast + rollback if failed)
 
+**5. Renaming Category**
+1. User right-clicks category (or Ctrl+Click) → context menu appears
+2. User clicks "重命名"
+3. Dialog opens with current category name pre-filled
+4. User enters new name → clicks "保存"
+5. **Batch operation**: Frontend collects all sources in category
+6. Frontend → Multiple `PATCH /api/sources/{source_id}` with `{ category: "newName" }`
+7. **Optimistic update**: UI updates immediately
+8. **Retry logic**: Failed requests retry once automatically
+9. **Success**: Toast "类别已重命名", cache invalidated
+10. **Failure**: UI rolls back to previous state, toast error message
+11. Note: Duplicate category names are prevented with validation
+
 ---
 
 ## 🎨 UI Design
@@ -440,17 +569,20 @@ For detailed API documentation with examples, see [OPENAPI_DOCUMENTATION.md](../
 - Monospace-friendly rendering
 
 **Key UI Components:**
-- `FeedSourceList` - Collapsible categories, source selection, dialog management
-- `ArticleList` - Infinite scroll article cards
+- `FeedSourceList` - Hierarchical tree with categories and sources, context menu support
+- `ArticleList` - Multi-mode filtering with infinite scroll
 - `ArticleDetail` - Sanitized HTML rendering
 - `AddSourceDialog` - URL validation, custom naming
-- `SourceContextMenu` - Right-click actions menu (4 actions)
-- `RenameSourceDialog` ✨ NEW - Rename RSS sources
-- `EditIconDialog` ✨ NEW - Custom icon editor with preview
+- `SourceContextMenu` - Right-click actions menu for sources (4 actions)
+- `CategoryContextMenu` - Right-click actions menu for categories (1 action)
+- `RenameSourceDialog` - Rename RSS sources
+- `RenameCategoryDialog` - Batch rename categories with retry logic
+- `EditIconDialog` - Custom icon editor with preview (with overflow protection)
 - `ConfirmDialog` - Reusable two-step confirmation
 - `Toaster` - Lower right toast notifications
+- `useAppStore` - Coordinated state management for source/category selection
 
-**Context Menu Layout:**
+**Source Context Menu Layout:**
 ```
 ┌─────────────────────────┐
 │ 📋 复制订阅源            │  Copy RSS link
@@ -461,13 +593,22 @@ For detailed API documentation with examples, see [OPENAPI_DOCUMENTATION.md](../
 └─────────────────────────┘
 ```
 
+**Category Context Menu Layout:**
+```
+┌─────────────────────────┐
+│ ✏️  重命名               │  Rename category
+└─────────────────────────┘
+```
+
 **Enhancements Over Figma:**
 - Real API integration (not mock data)
 - Resizable panels with drag handles
 - Infinite scroll pagination
 - Live favicon fetching
-- Context menu with quick actions
-- Inline editing dialogs (rename, icon)
+- Context menus for both sources and categories with quick actions
+- Inline editing dialogs (rename source/category, edit icon)
+- Batch category operations with optimistic updates
+- Overflow protection for long URLs in dialogs
 
 ---
 

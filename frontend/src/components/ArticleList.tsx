@@ -5,14 +5,14 @@ import { useArticles } from "../hooks/useQueries";
 import { useAppStore } from "../store/useAppStore";
 
 export function ArticleList() {
-  const { selectedSourceId, selectedArticleId, setSelectedArticleId } = useAppStore();
+  const { selectedSourceId, selectedCategory, selectedArticleId, setSelectedArticleId } = useAppStore();
   const {
     data,
     isLoading,
     isFetchingNextPage,
     hasNextPage,
     fetchNextPage
-  } = useArticles(selectedSourceId || undefined);
+  } = useArticles(selectedSourceId || undefined, selectedCategory || undefined);
 
   // Flatten paginated data
   const articles = data?.pages.flat() ?? [];

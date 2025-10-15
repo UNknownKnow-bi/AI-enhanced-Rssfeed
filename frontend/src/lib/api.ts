@@ -38,12 +38,15 @@ export const updateRSSSource = async (sourceId: string, data: UpdateSourceReques
 // Article APIs
 export const fetchArticles = async (
   sourceId?: string,
+  category?: string,
   limit: number = 50,
   offset: number = 0
 ): Promise<Article[]> => {
   const params: Record<string, any> = { limit, offset };
   if (sourceId) {
     params.source_id = sourceId;
+  } else if (category) {
+    params.category = category;
   }
   const response = await api.get<Article[]>('/api/articles', { params });
   return response.data;
