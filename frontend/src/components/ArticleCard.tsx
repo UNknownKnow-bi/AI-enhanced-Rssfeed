@@ -1,5 +1,6 @@
 import { Clock } from "lucide-react";
 import { SourceIcon } from "./SourceIcon";
+import { AILabels } from "./AILabels";
 import type { Article } from "../types";
 
 interface ArticleCardProps {
@@ -53,6 +54,13 @@ export function ArticleCard({ article, isSelected, onClick }: ArticleCardProps) 
           <h3 className="text-sm font-medium mb-2 line-clamp-2">
             {article.title}
           </h3>
+
+          {/* AI标签 - Compact模式 */}
+          <AILabels
+            labels={article.ai_labels}
+            status={article.ai_label_status}
+            mode="compact"
+          />
         </div>
       </div>
     </div>

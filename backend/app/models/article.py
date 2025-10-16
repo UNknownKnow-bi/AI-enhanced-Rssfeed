@@ -1,5 +1,5 @@
 from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Boolean
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import uuid
@@ -26,6 +26,11 @@ class Article(Base):
     pub_date = Column(DateTime(timezone=True), nullable=True)
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=get_utc_now, nullable=False)
+
+    # AI Labeling fields
+    ai_labels = Column(JSONB, nullable=True)  # Stores AI-generated labels as JSON
+    ai_label_status = Column(String, default='pending', nullable=False, index=True)  # pending|processing|done|error
+    ai_label_error = Column(Text, nullable=True)  # Error message if labeling fails
 
     # Relationships
     source = relationship("RSSSource", back_populates="articles")

@@ -57,6 +57,10 @@ async def list_articles(
             "created_at": article.created_at,
             "source_name": source.title,
             "source_icon": source.icon,
+
+            # AI Labeling fields
+            "ai_labels": article.ai_labels,
+            "ai_label_status": article.ai_label_status,
         }
         articles.append(ArticleListResponse(**article_dict))
 
@@ -98,6 +102,13 @@ async def get_article(
         "created_at": article.created_at,
         "source_name": source.title,
         "source_icon": source.icon,
+
+        # AI Labeling fields
+        "ai_labels": article.ai_labels,
+        "ai_label_status": article.ai_label_status,
+
+        # Optional: Extract vibe_coding for convenience
+        "vibe_coding": article.ai_labels.get("vibe_coding", False) if article.ai_labels else None,
     }
 
     return ArticleResponse(**article_dict)

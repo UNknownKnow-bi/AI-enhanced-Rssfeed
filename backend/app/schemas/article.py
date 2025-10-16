@@ -24,6 +24,11 @@ class ArticleResponse(ArticleBase):
     source_name: Optional[str] = None
     source_icon: Optional[str] = None
 
+    # AI Labeling fields
+    ai_labels: Optional[dict] = None
+    ai_label_status: Optional[str] = None
+    vibe_coding: Optional[bool] = None  # Extracted from ai_labels for convenience
+
     class Config:
         from_attributes = True
 
@@ -41,6 +46,10 @@ class ArticleListResponse(BaseModel):
     # Source info
     source_name: str
     source_icon: str
+
+    # AI Labeling fields
+    ai_labels: Optional[dict] = None
+    ai_label_status: Optional[str] = None
 
     class Config:
         from_attributes = True

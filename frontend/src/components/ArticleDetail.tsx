@@ -4,6 +4,7 @@ import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
 import { Button } from "./ui/button";
 import { SourceIcon } from "./SourceIcon";
+import { AILabels } from "./AILabels";
 import { useArticle } from "../hooks/useQueries";
 import { useAppStore } from "../store/useAppStore";
 import { sanitizeHTMLContent, stripHTMLTags } from "../lib/sanitizeContent";
@@ -83,6 +84,21 @@ export function ArticleDetail() {
             </div>
 
             <h1 className="text-2xl font-bold mb-4">{article.title}</h1>
+
+            {/* AI标签 - Full模式 */}
+            {article.ai_labels && (
+              <div className="mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Sparkles className="w-4 h-4 text-muted-foreground" />
+                  <span className="text-sm text-muted-foreground">AI分类标签</span>
+                </div>
+                <AILabels
+                  labels={article.ai_labels}
+                  status={article.ai_label_status}
+                  mode="full"
+                />
+              </div>
+            )}
 
             {article.cover_image && (
               <div className="mb-6 rounded-lg overflow-hidden">

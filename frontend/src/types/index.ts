@@ -25,6 +25,15 @@ export interface Article {
   created_at: string;
   source_name: string;
   source_icon: string;
+
+  // AI Labeling fields
+  ai_labels?: {
+    identities: string[];      // 核心身份标签
+    themes: string[];          // 内容主题标签
+    extra?: string[];          // 其他标签
+    vibe_coding?: boolean;     // VibeCoding标识
+  };
+  ai_label_status?: 'pending' | 'processing' | 'done' | 'error';
 }
 
 export interface RSSValidateRequest {

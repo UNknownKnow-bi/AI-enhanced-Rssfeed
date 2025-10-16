@@ -8,7 +8,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.models import RSSSource, Article
 from app.services.rss_parser import RSSParser
+from app.services.ai_labeler import get_ai_labeler
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,9 @@ class RSSScheduler:
                 await db.commit()
                 logger.info("RSS feed fetch cycle completed")
 
+                # Trigger AI labeling for pending articles
+                asyncio.create_task(self.process_ai_labeling())
+
             except Exception as e:
                 logger.error(f"Error in fetch_all_feeds: {e}")
                 await db.rollback()
@@ -133,6 +138,24 @@ class RSSScheduler:
         except Exception as e:
             logger.error(f"Error in fetch_and_store_feed for {source.url}: {e}")
             raise
+
+    async def process_ai_labeling(self):
+        """Process pending articles for AI labeling in a background task"""
+        try:
+            logger.info("Starting AI labeling task for pending articles")
+
+            # Create a new database session for this background task
+            async with AsyncSessionLocal() as db:
+                ai_labeler = get_ai_labeler()
+                processed_count = await ai_labeler.process_pending_articles(db)
+
+                if processed_count > 0:
+                    logger.info(f"AI labeling completed: {processed_count} articles labeled")
+                else:
+                    logger.info("AI labeling completed: no articles processed")
+
+        except Exception as e:
+            logger.error(f"Error in process_ai_labeling background task: {e}")
 
 
 # Global scheduler instance
