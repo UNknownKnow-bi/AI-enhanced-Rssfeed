@@ -71,6 +71,123 @@ class RSSParser:
             return url
 
     @staticmethod
+    async def _fetch_and_parse_with_fallback(
+        url: str,
+        client: httpx.AsyncClient
+    ) -> tuple[Optional[Any], str, bool, Optional[str]]:
+        """
+        Fetch and parse RSS feed with automatic fallback to URL without limit parameter.
+
+        This method implements a two-attempt strategy:
+        1. First attempt: Fetch with limit=999 parameter to maximize article retrieval
+        2. Fallback attempt: If first fails, retry with original URL (no limit parameter)
+
+        Args:
+            url: Original RSS feed URL (without limit parameter)
+            client: Configured httpx AsyncClient for making requests
+
+        Returns:
+            Tuple of (parsed_feed, url_used, fallback_was_used, error_message):
+            - parsed_feed: feedparser.FeedParserDict or None if both attempts failed
+            - url_used: The URL that successfully fetched the feed
+            - fallback_was_used: Boolean indicating if fallback was triggered
+            - error_message: Detailed error message if both attempts failed, None on success
+
+        Note:
+            Fallback is triggered on:
+            - HTTP status errors (4xx, 5xx)
+            - Network/connection errors
+            - Feed parsing errors (bozo=True with no entries)
+        """
+        # Track errors from both attempts
+        first_attempt_error = None
+        fallback_error = None
+
+        # First attempt: with limit=999 parameter
+        fetch_url_with_limit = RSSParser._apply_limit_param(url)
+
+        try:
+            response = await client.get(fetch_url_with_limit)
+            response.raise_for_status()
+            feed = feedparser.parse(response.text)
+
+            # Check if parsing succeeded (valid feed with entries or acceptable bozo)
+            if not (feed.bozo and not feed.entries):
+                logger.info(f"Successfully fetched with limit parameter: {url[:60]}... ({len(feed.entries)} entries)")
+                return (feed, fetch_url_with_limit, False, None)
+
+            # Parsing failed with bozo flag and no entries - trigger fallback
+            bozo_msg = str(feed.bozo_exception) if hasattr(feed, 'bozo_exception') else "Invalid feed format"
+            first_attempt_error = f"Feed parsing error: {bozo_msg}"
+            logger.warning(
+                f"Parsing failed with limit parameter (bozo={feed.bozo}, entries={len(feed.entries)}), "
+                f"trying without: {url[:60]}..."
+            )
+
+        except httpx.HTTPStatusError as e:
+            # Extract status code and reason
+            status_code = e.response.status_code
+            reason = e.response.reason_phrase if hasattr(e.response, 'reason_phrase') else str(status_code)
+            first_attempt_error = f"HTTP {status_code}: {reason}"
+            logger.warning(
+                f"HTTP error with limit parameter (status {status_code}), "
+                f"trying without: {url[:60]}..."
+            )
+        except httpx.RequestError as e:
+            first_attempt_error = f"Network error: {str(e)}"
+            logger.warning(
+                f"Request error with limit parameter ({type(e).__name__}), "
+                f"trying without: {url[:60]}..."
+            )
+
+        # Second attempt: without limit parameter (fallback)
+        try:
+            logger.info(f"Fallback attempt: fetching without limit parameter: {url[:60]}...")
+            response = await client.get(url)  # Original URL without modification
+            response.raise_for_status()
+            feed = feedparser.parse(response.text)
+
+            if not (feed.bozo and not feed.entries):
+                logger.info(
+                    f"✓ Fallback successful - fetched WITHOUT limit parameter: {url[:60]}... "
+                    f"({len(feed.entries)} entries)"
+                )
+                return (feed, url, True, None)
+
+            # Both attempts produced invalid feeds
+            bozo_msg = str(feed.bozo_exception) if hasattr(feed, 'bozo_exception') else "Invalid feed format"
+            fallback_error = f"Feed parsing error: {bozo_msg}"
+            logger.error(
+                f"Both attempts failed - feed invalid even without limit parameter: {url[:60]}... "
+                f"(bozo={feed.bozo}, entries={len(feed.entries)})"
+            )
+
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            reason = e.response.reason_phrase if hasattr(e.response, 'reason_phrase') else str(status_code)
+            fallback_error = f"HTTP {status_code}: {reason}"
+            logger.error(f"Fallback HTTP error (status {status_code}): {url[:60]}...")
+
+        except httpx.RequestError as e:
+            fallback_error = f"Network error: {str(e)}"
+            logger.error(f"Fallback request error ({type(e).__name__}): {url[:60]}...")
+
+        except Exception as e:
+            fallback_error = f"Unexpected error: {str(e)}"
+            logger.error(f"Fallback unexpected error: {e}")
+
+        # Both attempts failed - return the most informative error message
+        # Prefer fallback error since it's the simpler URL (more likely to be the real issue)
+        if fallback_error:
+            final_error = fallback_error
+        elif first_attempt_error:
+            final_error = first_attempt_error
+        else:
+            final_error = "Failed to fetch feed"
+
+        return (None, url, True, final_error)
+
+    @staticmethod
     async def validate_feed(url: str) -> Dict[str, Any]:
         """
         Validate an RSS feed URL by fetching and parsing it.
@@ -78,18 +195,26 @@ class RSSParser:
         Also caches the full feed data (feed info + articles) for later reuse
         in create_rss_source to avoid duplicate network requests.
 
+        Implements automatic fallback: if fetching with limit=999 fails, retries
+        with the original URL (no limit parameter).
+
         Returns:
             dict with keys: valid (bool), title (str), description (str), icon (str), error (str)
         """
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Apply limit parameter to maximize article retrieval
-                fetch_url = RSSParser._apply_limit_param(url)
-                response = await client.get(fetch_url)
-                response.raise_for_status()
+                # Fetch and parse with automatic fallback logic
+                feed, url_used, fallback_triggered, error_message = await RSSParser._fetch_and_parse_with_fallback(url, client)
 
-                # Parse the feed
-                feed = feedparser.parse(response.text)
+                # Check if fetch failed completely (both attempts)
+                if not feed:
+                    return {
+                        "valid": False,
+                        "title": None,
+                        "description": None,
+                        "icon": None,
+                        "error": error_message or "Failed to fetch feed"
+                    }
 
                 # Check if feed is valid
                 if feed.bozo and not feed.entries:
@@ -130,17 +255,25 @@ class RSSParser:
                     "link": feed_link,
                 }
 
+                # Cache using the URL that actually worked (might be with or without limit)
                 await cache.set(
-                    url=fetch_url,  # Use the URL with limit parameter
+                    url=url_used,
                     feed_info=feed_info,
                     articles=articles,
                     favicon_url=favicon_url
                 )
 
-                logger.info(
-                    f"Validated and cached feed: {feed_title} "
-                    f"({len(articles)} articles, TTL={settings.FEED_CACHE_TTL_SECONDS}s)"
-                )
+                # Log success with fallback status
+                if fallback_triggered:
+                    logger.info(
+                        f"Validated and cached feed (using fallback): {feed_title} "
+                        f"({len(articles)} articles, TTL={settings.FEED_CACHE_TTL_SECONDS}s)"
+                    )
+                else:
+                    logger.info(
+                        f"Validated and cached feed: {feed_title} "
+                        f"({len(articles)} articles, TTL={settings.FEED_CACHE_TTL_SECONDS}s)"
+                    )
 
                 return {
                     "valid": True,
@@ -175,27 +308,32 @@ class RSSParser:
         Fetch and parse an RSS feed, returning articles.
 
         Checks cache first to avoid duplicate network requests.
-        If cache miss, fetches from network.
+        If cache miss, fetches from network with automatic fallback logic.
+
+        Implements automatic fallback: if fetching with limit=999 fails, retries
+        with the original URL (no limit parameter).
 
         Returns:
             dict with keys: feed (dict), articles (list)
         """
         try:
             # Apply limit parameter to maximize article retrieval
-            fetch_url = RSSParser._apply_limit_param(url)
+            fetch_url_with_limit = RSSParser._apply_limit_param(url)
 
-            # Check cache first
+            # Check cache first - try both URL variants
+            # This ensures we hit cache regardless of which URL variant worked previously
             cache = get_feed_cache(
                 ttl=settings.FEED_CACHE_TTL_SECONDS,
                 max_size=settings.FEED_CACHE_MAX_SIZE
             )
 
-            cached_data = await cache.get(fetch_url)
+            # Try cache with limit parameter first
+            cached_data = await cache.get(fetch_url_with_limit)
 
             if cached_data:
-                # Cache hit - return cached data
+                # Cache hit with limit parameter
                 logger.info(
-                    f"Using cached feed data for {fetch_url[:60]}... "
+                    f"Cache HIT (with limit): {fetch_url_with_limit[:60]}... "
                     f"({len(cached_data['articles'])} articles)"
                 )
                 return {
@@ -203,18 +341,34 @@ class RSSParser:
                     "articles": cached_data["articles"]
                 }
 
-            # Cache miss - fetch from network
-            logger.info(f"Cache miss - fetching from network: {fetch_url[:60]}...")
+            # Try cache with original URL (without limit) as fallback
+            cached_data = await cache.get(url)
+
+            if cached_data:
+                # Cache hit with original URL (fallback variant)
+                logger.info(
+                    f"Cache HIT (without limit): {url[:60]}... "
+                    f"({len(cached_data['articles'])} articles)"
+                )
+                return {
+                    "feed": cached_data["feed_info"],
+                    "articles": cached_data["articles"]
+                }
+
+            # Cache miss - fetch from network with fallback logic
+            logger.info(f"Cache MISS - fetching from network: {url[:60]}...")
 
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(fetch_url)
-                response.raise_for_status()
+                # Fetch and parse with automatic fallback logic
+                feed, url_used, fallback_triggered, error_message = await RSSParser._fetch_and_parse_with_fallback(url, client)
 
-                # Parse the feed
-                feed = feedparser.parse(response.text)
+                # Check if fetch failed completely (both attempts)
+                if not feed:
+                    logger.error(f"Failed to fetch feed after fallback attempts: {url} - {error_message}")
+                    return None
 
                 if feed.bozo and not feed.entries:
-                    logger.error(f"Invalid feed: {url}")
+                    logger.error(f"Invalid feed (no entries): {url}")
                     return None
 
                 # Extract feed info
@@ -231,14 +385,26 @@ class RSSParser:
                     if article:
                         articles.append(article)
 
-                # Cache the fetched data for future requests
+                # Cache the fetched data for future requests using the URL that worked
                 # (Note: favicon_url not available here, set to None)
                 await cache.set(
-                    url=fetch_url,
+                    url=url_used,
                     feed_info=feed_info,
                     articles=articles,
                     favicon_url=None
                 )
+
+                # Log success with fallback status
+                if fallback_triggered:
+                    logger.info(
+                        f"Fetched and cached feed (using fallback): {feed_info['title']} "
+                        f"({len(articles)} articles)"
+                    )
+                else:
+                    logger.info(
+                        f"Fetched and cached feed: {feed_info['title']} "
+                        f"({len(articles)} articles)"
+                    )
 
                 return {
                     "feed": feed_info,

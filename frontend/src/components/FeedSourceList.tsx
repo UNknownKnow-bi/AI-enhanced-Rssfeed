@@ -45,10 +45,9 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
     }));
   };
 
-  const handleCategoryClick = (category: string) => {
-    // Toggle expansion
-    toggleCategory(category);
-    // Set selected category (null for "全部" means show all)
+  const handleSelectCategory = (category: string) => {
+    // Only select category, do NOT toggle expansion
+    // null for "全部" means show all articles
     setSelectedCategory(category === "全部" ? null : category);
   };
 
@@ -140,7 +139,10 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
   return (
     <div className="w-full border-r border-border bg-background flex flex-col h-full overflow-hidden">
       <div className="p-4 border-b border-border flex items-center justify-between flex-shrink-0">
-        <h2 className="font-semibold">信息源</h2>
+        <div className="flex items-center gap-2">
+          <img src="/src/assets/logo.png" alt="logo" className="w-10 h-8.5 rounded-sm" />
+          <h2 className="font-semibold">信息源</h2>
+        </div>
         <Button size="sm" variant="ghost" onClick={onAddSource}>
           <Plus className="w-4 h-4" />
         </Button>
@@ -150,18 +152,27 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
           {/* Level 1: "全部" as top-level parent */}
           <div className="mb-2">
             <button
-              onClick={() => handleCategoryClick("全部")}
+              onClick={() => handleSelectCategory("全部")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
                 selectedCategory === null && selectedSourceId === null
                   ? "bg-accent"
                   : "hover:bg-accent/50"
               }`}
             >
-              {expandedCategories["全部"] ? (
-                <ChevronDown className="w-4 h-4" />
-              ) : (
-                <ChevronRight className="w-4 h-4" />
-              )}
+              {/* Chevron with separate click handler for fold/expand only */}
+              <div
+                onClick={(e) => {
+                  e.stopPropagation(); // Prevent selection when clicking chevron
+                  toggleCategory("全部");
+                }}
+                className="flex items-center cursor-pointer"
+              >
+                {expandedCategories["全部"] ? (
+                  <ChevronDown className="w-4 h-4" />
+                ) : (
+                  <ChevronRight className="w-4 h-4" />
+                )}
+              </div>
               <span className="flex-1 text-left text-sm font-medium">全部</span>
               {getCategoryUnreadCount("全部") > 0 && (
                 <span className="text-muted-foreground text-xs">
@@ -185,18 +196,27 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
                         onRename={handleRenameCategoryRequest}
                       >
                         <button
-                          onClick={() => handleCategoryClick(category)}
+                          onClick={() => handleSelectCategory(category)}
                           className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
                             selectedCategory === category
                               ? "bg-accent"
                               : "hover:bg-accent/50"
                           }`}
                         >
-                          {isExpanded ? (
-                            <ChevronDown className="w-4 h-4" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4" />
-                          )}
+                          {/* Chevron with separate click handler for fold/expand only */}
+                          <div
+                            onClick={(e) => {
+                              e.stopPropagation(); // Prevent selection when clicking chevron
+                              toggleCategory(category);
+                            }}
+                            className="flex items-center cursor-pointer"
+                          >
+                            {isExpanded ? (
+                              <ChevronDown className="w-4 h-4" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4" />
+                            )}
+                          </div>
                           <span className="flex-1 text-left text-sm font-medium">{category}</span>
                           {unreadCount > 0 && (
                             <span className="text-muted-foreground text-xs">
