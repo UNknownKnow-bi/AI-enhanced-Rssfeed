@@ -34,6 +34,12 @@ export interface Article {
     vibe_coding?: boolean;     // VibeCoding标识
   };
   ai_label_status?: 'pending' | 'processing' | 'done' | 'error';
+
+  // AI Summary fields
+  ai_summary?: string;
+  ai_summary_status?: 'pending' | 'success' | 'error' | 'ignored';
+  ai_summary_error?: string;
+  ai_summary_generated_at?: string;
 }
 
 export interface RSSValidateRequest {

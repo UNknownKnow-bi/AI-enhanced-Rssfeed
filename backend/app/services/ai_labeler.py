@@ -10,6 +10,7 @@ from openai import OpenAI
 
 from app.models.article import Article
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,42 @@ class AILabeler:
 
         return labels_map
 
+    async def _trigger_summarization(self, article_ids: List):
+        """
+        Trigger summarization for a list of article IDs in a background task.
+
+        Args:
+            article_ids: List of article IDs to summarize
+        """
+        try:
+            # Import here to avoid circular dependency
+            from app.services.ai_summarizer import get_ai_summarizer
+
+            async with AsyncSessionLocal() as db:
+                summarizer = get_ai_summarizer()
+                # Query articles by IDs
+                result = await db.execute(
+                    select(Article)
+                    .options(selectinload(Article.source))
+                    .where(Article.id.in_(article_ids))
+                )
+                articles = result.scalars().all()
+
+                if not articles:
+                    return
+
+                logger.info(f"Processing {len(articles)} articles for summarization")
+
+                # Process articles concurrently
+                tasks = [summarizer.process_single_article(db, article) for article in articles]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                success_count = sum(1 for r in results if r is True)
+                logger.info(f"Summarization triggered: {success_count}/{len(articles)} successful")
+
+        except Exception as e:
+            logger.error(f"Error triggering summarization: {e}")
+
     async def process_pending_articles(self, db: AsyncSession, max_batches: int = None) -> int:
         """
         Process pending articles in batches.
@@ -295,6 +332,8 @@ class AILabeler:
 
                 # Update articles with labels
                 success_count = 0
+                articles_to_summarize = []  # Track articles that need summarization
+
                 for article in articles:
                     article_id_str = str(article.id)
                     if article_id_str in labels_map:
@@ -312,6 +351,11 @@ class AILabeler:
                         )
                         success_count += 1
                         logger.info(f"Successfully labeled article {article.id}: {labels}")
+
+                        # Check if article should be summarized (not ignored or error)
+                        identities = labels.get('identities', [])
+                        if '#可忽略' not in identities:
+                            articles_to_summarize.append(article.id)
                     else:
                         # No labels found for this article
                         await db.execute(
@@ -327,6 +371,11 @@ class AILabeler:
                 await db.commit()
                 total_processed += success_count
                 logger.info(f"Batch {batch_count} complete: {success_count}/{len(articles)} labeled (total: {total_processed})")
+
+                # Trigger summarization for successfully labeled articles (non-blocking)
+                if articles_to_summarize:
+                    logger.info(f"Triggering summarization for {len(articles_to_summarize)} articles")
+                    asyncio.create_task(self._trigger_summarization(articles_to_summarize))
 
                 # Small delay between batches to respect rate limits
                 if articles and len(articles) == settings.AI_BATCH_SIZE:
@@ -347,6 +396,148 @@ class AILabeler:
                         )
                         await db.commit()
                         logger.info(f"Reset {len(article_ids)} articles from 'processing' to 'pending' after error")
+                    except Exception as reset_error:
+                        logger.error(f"Failed to reset articles after error: {reset_error}")
+                        await db.rollback()
+
+                # Continue to next batch instead of stopping completely
+                continue
+
+        return total_processed
+
+    async def process_error_articles(self, db: AsyncSession, max_batches: int = None) -> int:
+        """
+        Process articles with error status in batches (retry failed labeling).
+
+        Args:
+            db: Database session
+            max_batches: Maximum number of batches to process (None = process all)
+
+        Returns:
+            Total number of articles successfully processed
+        """
+        total_processed = 0
+        batch_count = 0
+
+        while True:
+            # Check if we've hit the max batch limit
+            if max_batches is not None and batch_count >= max_batches:
+                logger.info(f"Reached max batch limit ({max_batches}), stopping retry process")
+                break
+
+            try:
+                # Query error articles (limit to batch size)
+                # IMPORTANT: Eager load the 'source' relationship to avoid lazy loading errors
+                result = await db.execute(
+                    select(Article)
+                    .options(selectinload(Article.source))
+                    .where(Article.ai_label_status == 'error')
+                    .order_by(Article.created_at.asc())
+                    .limit(settings.AI_BATCH_SIZE)
+                )
+                articles = result.scalars().all()
+
+                if not articles:
+                    logger.info(f"No error articles to retry (total processed: {total_processed})")
+                    break
+
+                batch_count += 1
+                logger.info(f"Retrying batch {batch_count}: {len(articles)} error articles for AI labeling")
+
+                # Update status to 'processing' to prevent concurrent processing
+                article_ids = [article.id for article in articles]
+                await db.execute(
+                    update(Article)
+                    .where(Article.id.in_(article_ids))
+                    .values(ai_label_status='processing')
+                )
+                await db.commit()
+
+                # Build messages
+                messages = self.build_messages(articles)
+
+                # Call DeepSeek API
+                api_response = await self.call_deepseek_api(messages)
+
+                if not api_response:
+                    # Mark as error again with updated error message
+                    await db.execute(
+                        update(Article)
+                        .where(Article.id.in_(article_ids))
+                        .values(
+                            ai_label_status='error',
+                            ai_label_error='Retry failed: No response from DeepSeek API after retries'
+                        )
+                    )
+                    await db.commit()
+                    logger.error(f"Retry batch {batch_count}: Failed to get API response")
+
+                    # Wait before next batch
+                    if articles and len(articles) == settings.AI_BATCH_SIZE:
+                        await asyncio.sleep(settings.AI_RETRY_BATCH_DELAY_SECONDS)
+                    continue
+
+                # Parse response
+                labels_map = self.parse_response(api_response, articles)
+
+                # Update articles with labels (per-article handling for partial success)
+                success_count = 0
+                for article in articles:
+                    article_id_str = str(article.id)
+                    if article_id_str in labels_map:
+                        labels = labels_map[article_id_str]
+
+                        # Update article with labels - success case
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id == article.id)
+                            .values(
+                                ai_labels=labels,
+                                ai_label_status='done',
+                                ai_label_error=None
+                            )
+                        )
+                        success_count += 1
+                        logger.info(f"Successfully retry-labeled article {article.id}: {labels}")
+                    else:
+                        # No labels found for this article - mark as error
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id == article.id)
+                            .values(
+                                ai_label_status='error',
+                                ai_label_error='Retry failed: No labels returned for this article'
+                            )
+                        )
+                        logger.warning(f"Retry: No labels found for article {article.id}")
+
+                await db.commit()
+                total_processed += success_count
+                logger.info(f"Retry batch {batch_count} complete: {success_count}/{len(articles)} labeled (total: {total_processed})")
+
+                # Wait between batches (configured delay)
+                if articles and len(articles) == settings.AI_BATCH_SIZE:
+                    logger.info(f"Waiting {settings.AI_RETRY_BATCH_DELAY_SECONDS} seconds before next retry batch...")
+                    await asyncio.sleep(settings.AI_RETRY_BATCH_DELAY_SECONDS)
+
+            except Exception as e:
+                logger.error(f"Error in retry batch {batch_count}: {e}")
+                await db.rollback()
+
+                # Reset any articles stuck in 'processing' back to 'error'
+                if 'article_ids' in locals():
+                    try:
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id.in_(article_ids))
+                            .where(Article.ai_label_status == 'processing')
+                            .values(
+                                ai_label_status='error',
+                                ai_label_error=f'Retry failed with exception: {str(e)}'
+                            )
+                        )
+                        await db.commit()
+                        logger.info(f"Reset {len(article_ids)} articles from 'processing' to 'error' after exception")
                     except Exception as reset_error:
                         logger.error(f"Failed to reset articles after error: {reset_error}")
                         await db.rollback()

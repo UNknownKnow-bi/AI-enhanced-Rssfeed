@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.models import RSSSource, Article
 from app.services.rss_parser import RSSParser
 from app.services.ai_labeler import get_ai_labeler
+from app.services.ai_summarizer import get_ai_summarizer
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 
@@ -35,9 +36,39 @@ class RSSScheduler:
                 replace_existing=True,
             )
 
+            # Schedule retry of error articles every N minutes
+            self.scheduler.add_job(
+                self.retry_error_labels,
+                'interval',
+                minutes=settings.AI_RETRY_INTERVAL_MINUTES,
+                id='retry_error_ai_labels',
+                replace_existing=True,
+            )
+
+            # Schedule AI summary generation every N minutes
+            self.scheduler.add_job(
+                self.process_pending_summaries,
+                'interval',
+                minutes=settings.AI_SUMMARY_INTERVAL_MINUTES,
+                id='process_ai_summaries',
+                replace_existing=True,
+            )
+
+            # Schedule retry of error summaries every N minutes
+            self.scheduler.add_job(
+                self.retry_error_summaries,
+                'interval',
+                minutes=settings.AI_SUMMARY_RETRY_INTERVAL_MINUTES,
+                id='retry_error_ai_summaries',
+                replace_existing=True,
+            )
+
             self.scheduler.start()
             self.is_running = True
             logger.info(f"RSS Scheduler started. Fetching feeds every {settings.SCRAPE_INTERVAL_MINUTES} minutes")
+            logger.info(f"AI Retry Scheduler started. Retrying error labels every {settings.AI_RETRY_INTERVAL_MINUTES} minutes")
+            logger.info(f"AI Summary Scheduler started. Processing summaries every {settings.AI_SUMMARY_INTERVAL_MINUTES} minutes")
+            logger.info(f"AI Summary Retry Scheduler started. Retrying error summaries every {settings.AI_SUMMARY_RETRY_INTERVAL_MINUTES} minutes")
 
     def shutdown(self):
         """Shutdown the scheduler"""
@@ -156,6 +187,147 @@ class RSSScheduler:
 
         except Exception as e:
             logger.error(f"Error in process_ai_labeling background task: {e}")
+
+    async def retry_error_labels(self):
+        """Retry AI labeling for articles with error status"""
+        logger.info("Starting retry cycle for error articles")
+
+        async with self.get_db_session() as db:
+            try:
+                # Check if there are any error articles first
+                result = await db.execute(
+                    select(Article)
+                    .where(Article.ai_label_status == 'error')
+                    .limit(1)
+                )
+                has_errors = result.scalar_one_or_none() is not None
+
+                if not has_errors:
+                    logger.info("No error articles found, skipping retry cycle")
+                    return
+
+                logger.info("Found error articles, triggering retry process")
+
+                # Trigger retry in background task
+                asyncio.create_task(self.process_error_ai_labeling())
+
+            except Exception as e:
+                logger.error(f"Error in retry_error_labels: {e}")
+                await db.rollback()
+
+    async def process_error_ai_labeling(self):
+        """Process error articles for AI labeling retry in a background task"""
+        try:
+            logger.info("Starting AI retry labeling task for error articles")
+
+            # Create a new database session for this background task
+            async with AsyncSessionLocal() as db:
+                ai_labeler = get_ai_labeler()
+                processed_count = await ai_labeler.process_error_articles(db)
+
+                if processed_count > 0:
+                    logger.info(f"AI retry labeling completed: {processed_count} articles successfully labeled")
+                else:
+                    logger.info("AI retry labeling completed: no articles successfully processed")
+
+        except Exception as e:
+            logger.error(f"Error in process_error_ai_labeling background task: {e}")
+
+    async def process_pending_summaries(self):
+        """Process pending articles for AI summarization"""
+        logger.info("Starting pending summaries processing cycle")
+
+        async with self.get_db_session() as db:
+            try:
+                # Check if there are any pending summaries first
+                result = await db.execute(
+                    select(Article)
+                    .where(
+                        Article.ai_summary_status == 'pending',
+                        Article.ai_label_status == 'done'
+                    )
+                    .limit(1)
+                )
+                has_pending = result.scalar_one_or_none() is not None
+
+                if not has_pending:
+                    logger.info("No pending summaries found, skipping processing cycle")
+                    return
+
+                logger.info("Found pending summaries, triggering processing")
+
+                # Trigger processing in background task
+                asyncio.create_task(self.process_ai_summaries_background())
+
+            except Exception as e:
+                logger.error(f"Error in process_pending_summaries: {e}")
+                await db.rollback()
+
+    async def process_ai_summaries_background(self):
+        """Process pending summaries in a background task"""
+        try:
+            logger.info("Starting AI summary generation task for pending articles")
+
+            # Create a new database session for this background task
+            async with AsyncSessionLocal() as db:
+                summarizer = get_ai_summarizer()
+                processed_count = await summarizer.process_pending_summaries(db)
+
+                if processed_count > 0:
+                    logger.info(f"AI summary generation completed: {processed_count} articles summarized")
+                else:
+                    logger.info("AI summary generation completed: no articles processed")
+
+        except Exception as e:
+            logger.error(f"Error in process_ai_summaries_background task: {e}")
+
+    async def retry_error_summaries(self):
+        """Retry AI summarization for articles with error status"""
+        logger.info("Starting retry cycle for error summaries")
+
+        async with self.get_db_session() as db:
+            try:
+                # Check if there are any error summaries first
+                result = await db.execute(
+                    select(Article)
+                    .where(
+                        Article.ai_summary_status == 'error',
+                        Article.ai_label_status == 'done'
+                    )
+                    .limit(1)
+                )
+                has_errors = result.scalar_one_or_none() is not None
+
+                if not has_errors:
+                    logger.info("No error summaries found, skipping retry cycle")
+                    return
+
+                logger.info("Found error summaries, triggering retry process")
+
+                # Trigger retry in background task
+                asyncio.create_task(self.process_error_ai_summaries_background())
+
+            except Exception as e:
+                logger.error(f"Error in retry_error_summaries: {e}")
+                await db.rollback()
+
+    async def process_error_ai_summaries_background(self):
+        """Process error summaries for retry in a background task"""
+        try:
+            logger.info("Starting AI summary retry task for error articles")
+
+            # Create a new database session for this background task
+            async with AsyncSessionLocal() as db:
+                summarizer = get_ai_summarizer()
+                processed_count = await summarizer.process_error_summaries(db)
+
+                if processed_count > 0:
+                    logger.info(f"AI summary retry completed: {processed_count} articles successfully summarized")
+                else:
+                    logger.info("AI summary retry completed: no articles successfully processed")
+
+        except Exception as e:
+            logger.error(f"Error in process_error_ai_summaries_background task: {e}")
 
 
 # Global scheduler instance

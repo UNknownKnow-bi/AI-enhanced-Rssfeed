@@ -32,5 +32,11 @@ class Article(Base):
     ai_label_status = Column(String, default='pending', nullable=False, index=True)  # pending|processing|done|error
     ai_label_error = Column(Text, nullable=True)  # Error message if labeling fails
 
+    # AI Summary fields
+    ai_summary = Column(Text, nullable=True)  # AI-generated markdown summary
+    ai_summary_status = Column(String, default='pending', nullable=False, index=True)  # pending|success|error|ignored
+    ai_summary_error = Column(Text, nullable=True)  # Error message if summary generation fails
+    ai_summary_generated_at = Column(DateTime(timezone=True), nullable=True)  # Timestamp when summary was generated
+
     # Relationships
     source = relationship("RSSSource", back_populates="articles")

@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     DEEPSEEK_MODEL: str = "deepseek-chat"
     AI_BATCH_SIZE: int = 3  # Number of articles to process per API call
     AI_MAX_RETRIES: int = 2  # Maximum retry attempts on API failure
+    AI_RETRY_INTERVAL_MINUTES: int = 15  # Interval for retrying error articles
+    AI_RETRY_BATCH_DELAY_SECONDS: int = 10  # Delay between batches when retrying
+
+    # AI Summary Configuration
+    AI_SUMMARY_BATCH_SIZE: int = 3  # Number of articles to summarize per batch
+    AI_SUMMARY_TIMEOUT_SECONDS: int = 30  # Timeout for summary API requests
+    AI_SUMMARY_MAX_CONCURRENT: int = 4  # Maximum concurrent summary requests
+    AI_SUMMARY_INTERVAL_MINUTES: int = 15  # Interval for processing pending summaries
+    AI_SUMMARY_RETRY_INTERVAL_MINUTES: int = 15  # Interval for retrying failed summaries
 
     model_config = SettingsConfigDict(env_file=".env")
 

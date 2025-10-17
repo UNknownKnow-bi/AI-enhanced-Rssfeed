@@ -78,6 +78,11 @@ async def list_articles(
             # AI Labeling fields
             "ai_labels": article.ai_labels,
             "ai_label_status": article.ai_label_status,
+
+            # AI Summary fields
+            "ai_summary": article.ai_summary,
+            "ai_summary_status": article.ai_summary_status,
+            "ai_summary_generated_at": article.ai_summary_generated_at,
         }
         articles.append(ArticleListResponse(**article_dict))
 
@@ -160,6 +165,11 @@ async def get_article(
 
         # Optional: Extract vibe_coding for convenience
         "vibe_coding": article.ai_labels.get("vibe_coding", False) if article.ai_labels else None,
+
+        # AI Summary fields
+        "ai_summary": article.ai_summary,
+        "ai_summary_status": article.ai_summary_status,
+        "ai_summary_generated_at": article.ai_summary_generated_at,
     }
 
     return ArticleResponse(**article_dict)

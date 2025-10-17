@@ -29,6 +29,11 @@ class ArticleResponse(ArticleBase):
     ai_label_status: Optional[str] = None
     vibe_coding: Optional[bool] = None  # Extracted from ai_labels for convenience
 
+    # AI Summary fields
+    ai_summary: Optional[str] = None
+    ai_summary_status: Optional[str] = None
+    ai_summary_generated_at: Optional[datetime] = None
+
     class Config:
         from_attributes = True
 
@@ -50,6 +55,11 @@ class ArticleListResponse(BaseModel):
     # AI Labeling fields
     ai_labels: Optional[dict] = None
     ai_label_status: Optional[str] = None
+
+    # AI Summary fields
+    ai_summary: Optional[str] = None
+    ai_summary_status: Optional[str] = None
+    ai_summary_generated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
