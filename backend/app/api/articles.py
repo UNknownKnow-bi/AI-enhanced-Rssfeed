@@ -15,13 +15,14 @@ router = APIRouter(prefix="/api", tags=["articles"])
 async def list_articles(
     source_id: Optional[UUID] = Query(None, description="Filter by RSS source ID"),
     category: Optional[str] = Query(None, description="Filter by category"),
+    tags: Optional[str] = Query(None, description="Filter by AI tags (comma-separated, AND logic)"),
     limit: int = Query(50, ge=1, le=100, description="Number of articles to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List articles with optional filtering by source or category.
-    Priority: source_id takes precedence over category if both are provided.
+    List articles with optional filtering by source, category, and/or AI tags.
+    Priority: source_id > category > tags (combined with AND logic).
     """
     query = select(Article, RSSSource).join(
         RSSSource, Article.source_id == RSSSource.id
@@ -33,6 +34,22 @@ async def list_articles(
     # Otherwise filter by category if provided
     elif category:
         query = query.where(RSSSource.category == category)
+
+    # Filter by tags if provided (combined with AND logic)
+    if tags:
+        tag_list = [tag.strip() for tag in tags.split(',') if tag.strip()]
+        for tag in tag_list:
+            if tag == '#VibeCoding':
+                # Special handling for VibeCoding flag
+                query = query.where(Article.ai_labels['vibe_coding'].astext == 'true')
+            else:
+                # Check if tag exists in any of the three arrays: identities, themes, extra
+                # Use Python dict instead of f-string to ensure proper JSONB type binding
+                query = query.where(
+                    Article.ai_labels.op('@>')({"identities": [tag]})
+                    | Article.ai_labels.op('@>')({"themes": [tag]})
+                    | Article.ai_labels.op('@>')({"extra": [tag]})
+                )
 
     # Order by publication date (newest first)
     query = query.order_by(Article.pub_date.desc().nulls_last(), Article.created_at.desc())
@@ -65,6 +82,40 @@ async def list_articles(
         articles.append(ArticleListResponse(**article_dict))
 
     return articles
+
+
+@router.get("/articles/tags", response_model=List[str])
+async def get_available_tags(
+    source_id: Optional[UUID] = Query(None, description="Filter by RSS source ID"),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get all unique AI tags from articles (respects source/category filter).
+    Returns deduplicated list of all tags from identities, themes, extra, and vibe_coding.
+    """
+    # Build query with filters
+    query = select(Article.ai_labels).where(Article.ai_label_status == 'done')
+
+    if source_id:
+        query = query.where(Article.source_id == source_id)
+    elif category:
+        query = query.join(RSSSource).where(RSSSource.category == category)
+
+    result = await db.execute(query)
+    all_labels = result.scalars().all()
+
+    # Extract unique tags
+    tags = set()
+    for labels in all_labels:
+        if labels:
+            tags.update(labels.get('identities', []))
+            tags.update(labels.get('themes', []))
+            tags.update(labels.get('extra', []))
+            if labels.get('vibe_coding'):
+                tags.add('#VibeCoding')
+
+    return sorted(list(tags))
 
 
 @router.get("/articles/{article_id}", response_model=ArticleResponse)

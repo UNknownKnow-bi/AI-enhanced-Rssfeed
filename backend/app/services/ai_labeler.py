@@ -5,12 +5,31 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 from openai import OpenAI
 
 from app.models.article import Article
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_tag(tag: str) -> str:
+    """
+    Normalize a tag by ensuring it starts with '#'.
+
+    Args:
+        tag: Tag string to normalize
+
+    Returns:
+        Tag with '#' prefix
+    """
+    if not tag:
+        return tag
+    tag = tag.strip()
+    if not tag.startswith('#'):
+        tag = f'#{tag}'
+    return tag
 
 
 class AILabeler:
@@ -67,8 +86,7 @@ class AILabeler:
 任务要求
 1. 阅读并理解提供的资讯全文。
 2. 严格遵循上述标签体系，输出最贴切的标签。
-3. 输出格式:只返回Json格式，包含所有文章的标签数组。
-4. 标签都加上#号"""
+3. 输出格式:只返回Json格式，包含所有文章的标签数组。标签都加上#号,且至少返回可忽略标签"""
 
         # Build user message with article data
         articles_data = []
@@ -155,6 +173,7 @@ class AILabeler:
     def parse_response(self, api_response: Dict[str, Any], articles: List[Article]) -> Dict[str, Dict[str, Any]]:
         """
         Parse API response and map labels to articles.
+        Normalizes all tags to ensure they start with '#'.
 
         Args:
             api_response: Response from DeepSeek API
@@ -180,10 +199,11 @@ class AILabeler:
         for label_data in labels_list:
             if "id" in label_data:
                 article_id = label_data["id"]
+                # Normalize all tags to ensure they start with '#'
                 labels_map[article_id] = {
-                    "identities": label_data.get("identities", []),
-                    "themes": label_data.get("themes", []),
-                    "extra": label_data.get("extra", []),
+                    "identities": [normalize_tag(tag) for tag in label_data.get("identities", [])],
+                    "themes": [normalize_tag(tag) for tag in label_data.get("themes", [])],
+                    "extra": [normalize_tag(tag) for tag in label_data.get("extra", [])],
                     "vibe_coding": label_data.get("vibe_coding", False)
                 }
 
@@ -192,128 +212,149 @@ class AILabeler:
             for i, article in enumerate(articles):
                 if i < len(labels_list):
                     label_data = labels_list[i]
+                    # Normalize all tags to ensure they start with '#'
                     labels_map[str(article.id)] = {
-                        "identities": label_data.get("identities", []),
-                        "themes": label_data.get("themes", []),
-                        "extra": label_data.get("extra", []),
+                        "identities": [normalize_tag(tag) for tag in label_data.get("identities", [])],
+                        "themes": [normalize_tag(tag) for tag in label_data.get("themes", [])],
+                        "extra": [normalize_tag(tag) for tag in label_data.get("extra", [])],
                         "vibe_coding": label_data.get("vibe_coding", False)
                     }
 
         return labels_map
 
-    async def process_pending_articles(self, db: AsyncSession) -> int:
+    async def process_pending_articles(self, db: AsyncSession, max_batches: int = None) -> int:
         """
         Process pending articles in batches.
 
         Args:
             db: Database session
+            max_batches: Maximum number of batches to process (None = process all)
 
         Returns:
-            Number of articles processed
+            Total number of articles processed
         """
-        try:
-            # Query pending articles (limit to batch size)
-            result = await db.execute(
-                select(Article)
-                .where(Article.ai_label_status == 'pending')
-                .order_by(Article.created_at.asc())
-                .limit(settings.AI_BATCH_SIZE)
-            )
-            articles = result.scalars().all()
+        total_processed = 0
+        batch_count = 0
 
-            if not articles:
-                logger.info("No pending articles to process")
-                return 0
+        while True:
+            # Check if we've hit the max batch limit
+            if max_batches is not None and batch_count >= max_batches:
+                logger.info(f"Reached max batch limit ({max_batches}), stopping")
+                break
 
-            # Only process if we have exactly the batch size (or this is the final batch)
-            if len(articles) < settings.AI_BATCH_SIZE:
-                logger.info(f"Only {len(articles)} pending articles found, waiting for more...")
-                return 0
+            try:
+                # Query pending articles (limit to batch size)
+                # IMPORTANT: Eager load the 'source' relationship to avoid lazy loading errors
+                result = await db.execute(
+                    select(Article)
+                    .options(selectinload(Article.source))
+                    .where(Article.ai_label_status == 'pending')
+                    .order_by(Article.created_at.asc())
+                    .limit(settings.AI_BATCH_SIZE)
+                )
+                articles = result.scalars().all()
 
-            logger.info(f"Processing {len(articles)} articles for AI labeling")
+                if not articles:
+                    logger.info(f"No more pending articles to process (total processed: {total_processed})")
+                    break
 
-            # Update status to 'processing'
-            article_ids = [article.id for article in articles]
-            await db.execute(
-                update(Article)
-                .where(Article.id.in_(article_ids))
-                .values(ai_label_status='processing')
-            )
-            await db.commit()
+                batch_count += 1
+                logger.info(f"Processing batch {batch_count}: {len(articles)} articles for AI labeling")
 
-            # Build messages
-            messages = self.build_messages(articles)
-
-            # Call DeepSeek API
-            api_response = await self.call_deepseek_api(messages)
-
-            if not api_response:
-                # Mark as error
+                # Update status to 'processing'
+                article_ids = [article.id for article in articles]
                 await db.execute(
                     update(Article)
                     .where(Article.id.in_(article_ids))
-                    .values(
-                        ai_label_status='error',
-                        ai_label_error='Failed to get response from DeepSeek API after retries'
-                    )
+                    .values(ai_label_status='processing')
                 )
                 await db.commit()
-                logger.error("Failed to label articles - API returned no response")
-                return 0
 
-            # Parse response
-            labels_map = self.parse_response(api_response, articles)
+                # Build messages
+                messages = self.build_messages(articles)
 
-            # Update articles with labels
-            success_count = 0
-            for article in articles:
-                article_id_str = str(article.id)
-                if article_id_str in labels_map:
-                    labels = labels_map[article_id_str]
+                # Call DeepSeek API
+                api_response = await self.call_deepseek_api(messages)
 
-                    # Check if article should be ignored
-                    if "#可忽略" in labels.get("identities", []):
-                        await db.execute(
-                            update(Article)
-                            .where(Article.id == article.id)
-                            .values(
-                                ai_labels=labels,
-                                ai_label_status='done',
-                                ai_label_error=None
-                            )
-                        )
-                    else:
-                        await db.execute(
-                            update(Article)
-                            .where(Article.id == article.id)
-                            .values(
-                                ai_labels=labels,
-                                ai_label_status='done',
-                                ai_label_error=None
-                            )
-                        )
-                    success_count += 1
-                    logger.info(f"Successfully labeled article {article.id}: {labels}")
-                else:
-                    # No labels found for this article
+                if not api_response:
+                    # Mark as error
                     await db.execute(
                         update(Article)
-                        .where(Article.id == article.id)
+                        .where(Article.id.in_(article_ids))
                         .values(
                             ai_label_status='error',
-                            ai_label_error='No labels returned for this article'
+                            ai_label_error='Failed to get response from DeepSeek API after retries'
                         )
                     )
-                    logger.warning(f"No labels found for article {article.id}")
+                    await db.commit()
+                    logger.error(f"Batch {batch_count}: Failed to get API response")
+                    continue  # Continue to next batch instead of stopping
 
-            await db.commit()
-            logger.info(f"Successfully labeled {success_count}/{len(articles)} articles")
-            return success_count
+                # Parse response
+                labels_map = self.parse_response(api_response, articles)
 
-        except Exception as e:
-            logger.error(f"Error in process_pending_articles: {e}")
-            await db.rollback()
-            return 0
+                # Update articles with labels
+                success_count = 0
+                for article in articles:
+                    article_id_str = str(article.id)
+                    if article_id_str in labels_map:
+                        labels = labels_map[article_id_str]
+
+                        # Update article with labels (same logic for ignored or not)
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id == article.id)
+                            .values(
+                                ai_labels=labels,
+                                ai_label_status='done',
+                                ai_label_error=None
+                            )
+                        )
+                        success_count += 1
+                        logger.info(f"Successfully labeled article {article.id}: {labels}")
+                    else:
+                        # No labels found for this article
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id == article.id)
+                            .values(
+                                ai_label_status='error',
+                                ai_label_error='No labels returned for this article'
+                            )
+                        )
+                        logger.warning(f"No labels found for article {article.id}")
+
+                await db.commit()
+                total_processed += success_count
+                logger.info(f"Batch {batch_count} complete: {success_count}/{len(articles)} labeled (total: {total_processed})")
+
+                # Small delay between batches to respect rate limits
+                if articles and len(articles) == settings.AI_BATCH_SIZE:
+                    await asyncio.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Error in batch {batch_count}: {e}")
+                await db.rollback()
+
+                # Reset any articles stuck in 'processing' back to 'pending'
+                if 'article_ids' in locals():
+                    try:
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id.in_(article_ids))
+                            .where(Article.ai_label_status == 'processing')
+                            .values(ai_label_status='pending')
+                        )
+                        await db.commit()
+                        logger.info(f"Reset {len(article_ids)} articles from 'processing' to 'pending' after error")
+                    except Exception as reset_error:
+                        logger.error(f"Failed to reset articles after error: {reset_error}")
+                        await db.rollback()
+
+                # Continue to next batch instead of stopping completely
+                continue
+
+        return total_processed
 
 
 # Global labeler instance

@@ -99,8 +99,11 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
 
 ### 2. Article Browsing & Reading
 
-**Three-Panel Resizable Layout**
-- Left: RSS sources (15-30%), Middle: Article list (20-50%), Right: Details (min 30%)
+**Four-Panel Resizable Layout**
+- Panel 1 (Left): RSS sources (15-30%)
+- Panel 2: AI Tag filter (collapsible, 256px fixed width)
+- Panel 3 (Middle): Article list (20-50%)
+- Panel 4 (Right): Article details (min 30%)
 - Drag-to-resize with independent scrolling (Radix UI ScrollArea)
 
 **Article List (Infinite Scroll)**
@@ -143,7 +146,50 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
 
 ---
 
-### 4. Background Processing & Scheduling
+### 4. AI Tag Filtering
+
+**Smart Tag Discovery**
+- Automatic tag extraction from articles with `ai_label_status='done'`
+- Respects current source/category filter context
+- Real-time updates as new articles are labeled
+- Returns deduplicated, sorted tag list
+
+**Filter UI (Four-Panel Layout)**
+- **Left Panel**: Tag filter with hierarchical grouping
+  - Special: #VibeCoding (gradient purple highlight)
+  - Identity Tags: #独立开发必备, #博主素材, #双重价值, #可忽略
+  - Theme Tags: #模型动态, #技术教程, #深度洞察, #经验分享, #AI应用, #趣味探索
+  - Extra Tags: Custom AI-generated tags
+- **Search**: Real-time tag search with fuzzy matching
+- **Selection**: Multi-select with visual badges and count display
+- **Clear**: One-click clear all selected tags
+
+**Filter Logic (AND)**
+- Multiple tags combined with AND logic (intersection)
+- PostgreSQL GIN index on `ai_labels` JSONB field for optimal performance
+- Uses `@>` containment operator with proper JSONB type binding
+- Special handling for `#VibeCoding` boolean flag
+
+**Tag Normalization**
+- All tags automatically prefixed with `#` before storage
+- Normalization applied in `ai_labeler.py::normalize_tag()`
+- Database migration ensures existing tags are normalized
+- Consistent format across API, database, and UI
+
+**Technical Details**
+- **Backend**: JSONB containment queries via SQLAlchemy
+  ```python
+  Article.ai_labels.op('@>')({"identities": [tag]})
+  ```
+- **Frontend**: TanStack Query for tag list caching
+- **Database**: GIN index (`idx_articles_ai_labels_gin`) for fast JSONB searches
+- **Migration**: `c85b81cde9f1_normalize_existing_tags.py` ensures data integrity
+
+**Implementation:** [articles.py](backend/app/api/articles.py), [TagFilter.tsx](frontend/src/components/TagFilter.tsx), [useQueries.ts](frontend/src/hooks/useQueries.ts), GIN index migration
+
+---
+
+### 5. Background Processing & Scheduling
 
 **RSS Fetching**
 - APScheduler runs every 15 minutes with 2-minute delays between sources (rate limiting)
@@ -189,7 +235,13 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
 - `DELETE /api/sources/{id}` - Delete source + articles (CASCADE)
 
 **Articles**
-- `GET /api/articles?source_id={uuid}&category={string}` - List with filters, pagination, AI labels
+- `GET /api/articles?source_id={uuid}&category={string}&tags={comma_separated}` - List with filters, pagination, AI labels
+  - `tags`: Comma-separated AI tags (AND logic), e.g., `tags=#独立开发必备,#技术教程`
+  - Filters: source_id > category > tags (combined with AND)
+  - Returns 50 articles per page with AI labels
+- `GET /api/articles/tags?source_id={uuid}&category={string}` - Get available AI tags
+  - Returns deduplicated tags from articles with `ai_label_status='done'`
+  - Respects source/category filter context
 - `GET /api/articles/{id}` - Get details with AI labels
 - `PATCH /api/articles/{id}/read` - Mark as read (planned)
 
@@ -216,12 +268,21 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
 3. Detail view displays sanitized content + full AI tags
 4. Auto-refresh every 60 seconds
 
+### Filtering Articles by AI Tags
+1. User selects source/category (optional) → `GET /api/articles/tags` fetches available tags
+2. TagFilter component displays tags grouped by type (Special/Identity/Theme/Extra)
+3. User searches/selects tags → Multi-select with visual badges
+4. `GET /api/articles?tags=#独立开发必备,#技术教程` filters with AND logic
+5. PostgreSQL GIN index performs efficient JSONB containment queries
+6. Article list updates with filtered results
+
 ---
 
 ## 🎨 UI Components
 
 **Layout**
 - FeedSourceList - Hierarchical tree + context menus
+- TagFilter - AI tag filtering with search and grouping
 - ArticleList - Infinite scroll with filtering
 - ArticleDetail - Sanitized HTML + AI tags
 - SourceIcon - Favicon/emoji display
@@ -229,8 +290,14 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
 **Dialogs**
 - AddSourceDialog, RenameSourceDialog, RenameCategoryDialog, EditIconDialog, ConfirmDialog, Toaster
 
-**AI**
+**AI Components**
 - AILabels - Tag rendering (compact/full modes)
+- TagFilter - Hierarchical tag browser with:
+  - Real-time search input
+  - Grouped display (Special/Identity/Theme/Extra)
+  - Multi-select with badge UI
+  - Selected tags panel with clear action
+  - Color-coded tags matching AILabels
 
 **Design:** See `figma_frontendbasic/` folder
 
@@ -240,11 +307,13 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
 
 - AI article summarization, user authentication (email login)
 - Read/unread tracking with bold styling
-- Filter by AI labels, favorites/bookmarks
+- ✅ ~~Filter by AI labels~~ (Implemented - see section 4)
+- Favorites/bookmarks functionality
 - Full-text search, advanced filters (date range, keywords)
 - Export to PDF/Markdown/JSON
 - Mobile apps (iOS/Android), browser extension
 - RSS feed recommendations based on reading habits
+- Tag-based analytics and insights dashboard
 
 ---
 
@@ -263,4 +332,4 @@ Frontend (React + Vite) ←→ Backend API (FastAPI) ←→ Database (PostgreSQL
 
 ---
 
-**Last Updated:** 2025-10-16
+**Last Updated:** 2025-10-17

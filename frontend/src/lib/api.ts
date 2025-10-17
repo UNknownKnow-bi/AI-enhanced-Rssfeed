@@ -39,6 +39,7 @@ export const updateRSSSource = async (sourceId: string, data: UpdateSourceReques
 export const fetchArticles = async (
   sourceId?: string,
   category?: string,
+  tags?: string[],
   limit: number = 50,
   offset: number = 0
 ): Promise<Article[]> => {
@@ -47,6 +48,10 @@ export const fetchArticles = async (
     params.source_id = sourceId;
   } else if (category) {
     params.category = category;
+  }
+  // Add tags parameter (comma-separated)
+  if (tags && tags.length > 0) {
+    params.tags = tags.join(',');
   }
   const response = await api.get<Article[]>('/api/articles', { params });
   return response.data;
@@ -59,4 +64,18 @@ export const fetchArticle = async (articleId: string): Promise<Article> => {
 
 export const markArticleAsRead = async (articleId: string): Promise<void> => {
   await api.patch(`/api/articles/${articleId}/read`);
+};
+
+export const fetchAvailableTags = async (
+  sourceId?: string,
+  category?: string
+): Promise<string[]> => {
+  const params: Record<string, any> = {};
+  if (sourceId) {
+    params.source_id = sourceId;
+  } else if (category) {
+    params.category = category;
+  }
+  const response = await api.get<string[]>('/api/articles/tags', { params });
+  return response.data;
 };

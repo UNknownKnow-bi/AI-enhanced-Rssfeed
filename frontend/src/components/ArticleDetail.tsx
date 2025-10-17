@@ -88,10 +88,6 @@ export function ArticleDetail() {
             {/* AI标签 - Full模式 */}
             {article.ai_labels && (
               <div className="mb-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Sparkles className="w-4 h-4 text-muted-foreground" />
-                  <span className="text-sm text-muted-foreground">AI分类标签</span>
-                </div>
                 <AILabels
                   labels={article.ai_labels}
                   status={article.ai_label_status}

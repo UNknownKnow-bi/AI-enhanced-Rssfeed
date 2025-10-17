@@ -5,8 +5,13 @@ import type { AddSourceRequest, UpdateSourceRequest } from '../types';
 // Query keys
 export const queryKeys = {
   sources: ['sources'] as const,
-  articles: (sourceId?: string, category?: string) => ['articles', sourceId, category] as const,
+  articles: (sourceId?: string, category?: string, tags?: string[]) => {
+    // Sort tags alphabetically for consistent cache keys
+    const sortedTags = tags && tags.length > 0 ? [...tags].sort() : undefined;
+    return ['articles', sourceId, category, sortedTags] as const;
+  },
   article: (articleId: string) => ['article', articleId] as const,
+  availableTags: (sourceId?: string, category?: string) => ['availableTags', sourceId, category] as const,
 };
 
 // RSS Sources
@@ -89,10 +94,10 @@ export const useValidateURL = () => {
 // Articles - Infinite Query for Pagination
 const ARTICLES_PER_PAGE = 50;
 
-export const useArticles = (sourceId?: string, category?: string) => {
+export const useArticles = (sourceId?: string, category?: string, tags?: string[]) => {
   return useInfiniteQuery({
-    queryKey: queryKeys.articles(sourceId, category),
-    queryFn: ({ pageParam = 0 }) => api.fetchArticles(sourceId, category, ARTICLES_PER_PAGE, pageParam),
+    queryKey: queryKeys.articles(sourceId, category, tags),
+    queryFn: ({ pageParam = 0 }) => api.fetchArticles(sourceId, category, tags, ARTICLES_PER_PAGE, pageParam),
     getNextPageParam: (lastPage, allPages) => {
       // If the last page has fewer articles than the page size, we've reached the end
       if (lastPage.length < ARTICLES_PER_PAGE) {
@@ -103,6 +108,15 @@ export const useArticles = (sourceId?: string, category?: string) => {
     },
     refetchInterval: 60000, // Refetch every minute
     initialPageParam: 0,
+  });
+};
+
+export const useAvailableTags = (sourceId?: string, category?: string) => {
+  return useQuery({
+    queryKey: queryKeys.availableTags(sourceId, category),
+    queryFn: () => api.fetchAvailableTags(sourceId, category),
+    refetchInterval: 120000, // Refetch every 2 minutes
+    staleTime: 60000, // Consider stale after 1 minute
   });
 };
 

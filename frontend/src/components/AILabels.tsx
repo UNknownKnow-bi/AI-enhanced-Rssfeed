@@ -47,7 +47,7 @@ const STATUS_BADGES = {
 /**
  * 获取标签的样式类名
  */
-function getTagStyle(tag: string): string {
+export function getTagStyle(tag: string): string {
   return TAG_STYLES[tag] || TAG_STYLES.default;
 }
 
