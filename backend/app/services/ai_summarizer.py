@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.orm import selectinload
 from openai import OpenAI
+from uuid import UUID
 
 from app.models.article import Article
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +89,13 @@ class AISummarizer:
 - **观点三**：[...依此类推]
 
 ## 对我的价值
-*这是最重要的部分。请站在我的双重身份上，分析这篇文章对我的具体价值。*
+*这是最重要的部分。请站在我的双重身份上，分析这篇文章对我的具体价值,用一句话简明表要核心利益点即可。*
 ---
 
 **输出要求**：
 1. 使用标准Markdown格式
-2. 保持简洁，总字数控制在500-800字
-3. 重点突出"对我的价值"部分
-4. 不要添加任何与摘要无关的内容（如免责声明、meta信息等）"""
+2. 保持简洁，总字数控制在700字以内，言简意赅越好
+3. 不要添加任何与摘要无关的内容（如免责声明、meta信息等）"""
 
         # Build user message with article data
         content = article.content or article.description or ""
@@ -123,6 +124,7 @@ class AISummarizer:
     async def call_deepseek_api(self, messages: List[dict]) -> Optional[str]:
         """
         Call DeepSeek API with retry logic and timeout.
+        Uses asyncio.to_thread to prevent blocking the event loop.
 
         Args:
             messages: Messages array for the API
@@ -137,8 +139,9 @@ class AISummarizer:
             try:
                 logger.info(f"Calling DeepSeek API for summary (attempt {attempt + 1}/{settings.AI_MAX_RETRIES + 1})")
 
-                # Call API using OpenAI SDK (timeout handled at asyncio level)
-                response = client.chat.completions.create(
+                # Call API in thread pool to avoid blocking event loop
+                response = await asyncio.to_thread(
+                    client.chat.completions.create,
                     model=settings.DEEPSEEK_MODEL,
                     messages=messages,
                     temperature=0.5,  # Slightly higher for more creative summaries
@@ -186,6 +189,8 @@ class AISummarizer:
         """
         Process a single article for summarization with concurrency control.
 
+        DEPRECATED: Use _process_article_by_id() instead for better session management.
+
         Args:
             db: Database session
             article: Article to summarize
@@ -197,9 +202,9 @@ class AISummarizer:
             try:
                 # Check if should skip
                 if self.should_skip_article(article):
-                    await db.execute(
+                    result = await db.execute(
                         update(Article)
-                        .where(Article.id == article.id)
+                        .where(Article.id == article.id, Article.ai_summary_status.in_(['pending', 'error']))
                         .values(
                             ai_summary_status='ignored',
                             ai_summary_error='Content too short or marked as ignorable'
@@ -208,13 +213,18 @@ class AISummarizer:
                     await db.commit()
                     return False
 
-                # Update status to processing
-                await db.execute(
+                # Update status to processing with conditional check
+                result = await db.execute(
                     update(Article)
-                    .where(Article.id == article.id)
+                    .where(Article.id == article.id, Article.ai_summary_status.in_(['pending', 'error']))
                     .values(ai_summary_status='processing')
                 )
                 await db.commit()
+
+                # Check if update succeeded (article might have been processed by another task)
+                if result.rowcount == 0:
+                    logger.info(f"Article {article.id} already being processed, skipping")
+                    return False
 
                 # Build prompt
                 messages = self.build_summary_prompt(article)
@@ -282,12 +292,131 @@ class AISummarizer:
 
                 return False
 
+    async def _process_article_by_id(self, article_id: UUID) -> bool:
+        """
+        Process a single article by ID, creating its own database session.
+        This method is concurrency-safe and should be used for parallel processing.
+
+        Args:
+            article_id: UUID of the article to process
+
+        Returns:
+            True if successful, False otherwise
+        """
+        async with self._semaphore:
+            async with AsyncSessionLocal() as db:
+                try:
+                    # Query article with source relationship
+                    result = await db.execute(
+                        select(Article)
+                        .options(selectinload(Article.source))
+                        .where(Article.id == article_id)
+                    )
+                    article = result.scalar_one_or_none()
+
+                    if not article:
+                        logger.warning(f"Article {article_id} not found")
+                        return False
+
+                    # Check if should skip
+                    if self.should_skip_article(article):
+                        result = await db.execute(
+                            update(Article)
+                            .where(Article.id == article_id, Article.ai_summary_status.in_(['pending', 'error']))
+                            .values(
+                                ai_summary_status='ignored',
+                                ai_summary_error='Content too short or marked as ignorable'
+                            )
+                        )
+                        await db.commit()
+                        return False
+
+                    # Update status to processing with conditional check
+                    result = await db.execute(
+                        update(Article)
+                        .where(Article.id == article_id, Article.ai_summary_status.in_(['pending', 'error']))
+                        .values(ai_summary_status='processing')
+                    )
+                    await db.commit()
+
+                    # Check if update succeeded (article might have been processed by another task)
+                    if result.rowcount == 0:
+                        logger.info(f"Article {article_id} already being processed, skipping")
+                        return False
+
+                    # Build prompt
+                    messages = self.build_summary_prompt(article)
+
+                    # Call API
+                    summary = await self.call_deepseek_api(messages)
+
+                    if not summary:
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id == article_id)
+                            .values(
+                                ai_summary_status='error',
+                                ai_summary_error='Failed to get response from DeepSeek API after retries'
+                            )
+                        )
+                        await db.commit()
+                        return False
+
+                    # Validate summary
+                    if not self.validate_summary(summary):
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id == article_id)
+                            .values(
+                                ai_summary_status='error',
+                                ai_summary_error='Invalid summary format returned by API'
+                            )
+                        )
+                        await db.commit()
+                        return False
+
+                    # Save successful summary
+                    await db.execute(
+                        update(Article)
+                        .where(Article.id == article_id)
+                        .values(
+                            ai_summary=summary,
+                            ai_summary_status='success',
+                            ai_summary_error=None,
+                            ai_summary_generated_at=datetime.now(timezone.utc)
+                        )
+                    )
+                    await db.commit()
+                    logger.info(f"Successfully generated summary for article {article_id}")
+                    return True
+
+                except Exception as e:
+                    logger.error(f"Error processing article {article_id}: {e}")
+                    await db.rollback()
+
+                    try:
+                        await db.execute(
+                            update(Article)
+                            .where(Article.id == article_id)
+                            .values(
+                                ai_summary_status='error',
+                                ai_summary_error=f'Processing error: {str(e)}'
+                            )
+                        )
+                        await db.commit()
+                    except Exception as update_error:
+                        logger.error(f"Failed to update error status: {update_error}")
+                        await db.rollback()
+
+                    return False
+
     async def process_pending_summaries(self, db: AsyncSession, max_articles: int = None) -> int:
         """
         Process pending articles for summarization in batches.
+        Uses per-article sessions to avoid concurrency issues.
 
         Args:
-            db: Database session
+            db: Database session (used only for querying article IDs)
             max_articles: Maximum number of articles to process (None = process all)
 
         Returns:
@@ -303,14 +432,13 @@ class AISummarizer:
                 break
 
             try:
-                # Query pending articles (eager load source relationship)
+                # Query pending article IDs only (no eager loading needed)
                 limit = settings.AI_SUMMARY_BATCH_SIZE
                 if max_articles is not None:
                     limit = min(limit, max_articles - total_processed)
 
                 result = await db.execute(
-                    select(Article)
-                    .options(selectinload(Article.source))
+                    select(Article.id)
                     .where(
                         Article.ai_summary_status == 'pending',
                         Article.ai_label_status == 'done'  # Only process labeled articles
@@ -318,32 +446,31 @@ class AISummarizer:
                     .order_by(Article.created_at.asc())
                     .limit(limit)
                 )
-                articles = result.scalars().all()
+                article_ids = [row[0] for row in result.fetchall()]
 
-                if not articles:
+                if not article_ids:
                     logger.info(f"No more pending summaries to process (total processed: {total_processed})")
                     break
 
                 batch_count += 1
-                logger.info(f"Processing summary batch {batch_count}: {len(articles)} articles")
+                logger.info(f"Processing summary batch {batch_count}: {len(article_ids)} articles")
 
-                # Process articles concurrently with semaphore control
-                tasks = [self.process_single_article(db, article) for article in articles]
+                # Process articles concurrently - each creates its own session
+                tasks = [self._process_article_by_id(article_id) for article_id in article_ids]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Count successes
                 success_count = sum(1 for r in results if r is True)
                 total_processed += success_count
 
-                logger.info(f"Summary batch {batch_count} complete: {success_count}/{len(articles)} successful (total: {total_processed})")
+                logger.info(f"Summary batch {batch_count} complete: {success_count}/{len(article_ids)} successful (total: {total_processed})")
 
                 # Small delay between batches
-                if articles and len(articles) == settings.AI_SUMMARY_BATCH_SIZE:
+                if article_ids and len(article_ids) == settings.AI_SUMMARY_BATCH_SIZE:
                     await asyncio.sleep(2)
 
             except Exception as e:
                 logger.error(f"Error in summary batch {batch_count}: {e}")
-                await db.rollback()
                 continue
 
         return total_processed
@@ -351,9 +478,10 @@ class AISummarizer:
     async def process_error_summaries(self, db: AsyncSession, max_articles: int = None) -> int:
         """
         Retry articles with error status for summarization.
+        Uses per-article sessions to avoid concurrency issues.
 
         Args:
-            db: Database session
+            db: Database session (used only for querying article IDs)
             max_articles: Maximum number of articles to retry (None = process all)
 
         Returns:
@@ -369,14 +497,13 @@ class AISummarizer:
                 break
 
             try:
-                # Query error articles (eager load source relationship)
+                # Query error article IDs only (no eager loading needed)
                 limit = settings.AI_SUMMARY_BATCH_SIZE
                 if max_articles is not None:
                     limit = min(limit, max_articles - total_processed)
 
                 result = await db.execute(
-                    select(Article)
-                    .options(selectinload(Article.source))
+                    select(Article.id)
                     .where(
                         Article.ai_summary_status == 'error',
                         Article.ai_label_status == 'done'  # Only retry labeled articles
@@ -384,32 +511,31 @@ class AISummarizer:
                     .order_by(Article.created_at.asc())
                     .limit(limit)
                 )
-                articles = result.scalars().all()
+                article_ids = [row[0] for row in result.fetchall()]
 
-                if not articles:
+                if not article_ids:
                     logger.info(f"No error summaries to retry (total processed: {total_processed})")
                     break
 
                 batch_count += 1
-                logger.info(f"Retrying summary batch {batch_count}: {len(articles)} articles")
+                logger.info(f"Retrying summary batch {batch_count}: {len(article_ids)} articles")
 
-                # Process articles concurrently with semaphore control
-                tasks = [self.process_single_article(db, article) for article in articles]
+                # Process articles concurrently - each creates its own session
+                tasks = [self._process_article_by_id(article_id) for article_id in article_ids]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Count successes
                 success_count = sum(1 for r in results if r is True)
                 total_processed += success_count
 
-                logger.info(f"Summary retry batch {batch_count} complete: {success_count}/{len(articles)} successful (total: {total_processed})")
+                logger.info(f"Summary retry batch {batch_count} complete: {success_count}/{len(article_ids)} successful (total: {total_processed})")
 
                 # Delay between retry batches (use same delay as labeling)
-                if articles and len(articles) == settings.AI_SUMMARY_BATCH_SIZE:
+                if article_ids and len(article_ids) == settings.AI_SUMMARY_BATCH_SIZE:
                     await asyncio.sleep(settings.AI_RETRY_BATCH_DELAY_SECONDS)
 
             except Exception as e:
                 logger.error(f"Error in summary retry batch {batch_count}: {e}")
-                await db.rollback()
                 continue
 
         return total_processed

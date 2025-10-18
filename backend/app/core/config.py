@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     AI_SUMMARY_MAX_CONCURRENT: int = 4  # Maximum concurrent summary requests
     AI_SUMMARY_INTERVAL_MINUTES: int = 15  # Interval for processing pending summaries
     AI_SUMMARY_RETRY_INTERVAL_MINUTES: int = 15  # Interval for retrying failed summaries
+    # Delay between labeling batches (seconds)
+    AI_LABEL_BATCH_DELAY_SECONDS: int = 3
 
     model_config = SettingsConfigDict(env_file=".env")
 

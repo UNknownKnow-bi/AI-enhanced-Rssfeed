@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Badge } from './ui/badge';
 import { ScrollArea } from './ui/scroll-area';
 import { Input } from './ui/input';
@@ -7,6 +7,7 @@ import { useAvailableTags } from '../hooks/useQueries';
 import { useAppStore } from '../store/useAppStore';
 import { getTagStyle } from './AILabels';
 import { cn } from '../lib/utils';
+import { useDebounce } from '../hooks/useDebounce';
 
 export function TagFilter() {
   const { selectedSourceId, selectedCategory, selectedTags, toggleTag, clearTags } = useAppStore();
@@ -17,21 +18,33 @@ export function TagFilter() {
 
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Filter tags based on search query
-  const filteredTags = (availableTags || []).filter(tag =>
-    tag.toLowerCase().includes(searchQuery.toLowerCase())
+  // Debounce search query to reduce re-renders while typing
+  const debouncedSearchQuery = useDebounce(searchQuery, 300);
+
+  // Memoize filtered tags to avoid recalculating on every render
+  const filteredTags = useMemo(
+    () => (availableTags || []).filter(tag =>
+      tag.toLowerCase().includes(debouncedSearchQuery.toLowerCase())
+    ),
+    [availableTags, debouncedSearchQuery]
   );
 
-  // Group tags by category
-  const identityTags = ['#独立开发必备', '#博主素材', '#双重价值', '#可忽略'];
-  const themeTags = ['#模型动态', '#技术教程', '#深度洞察', '#经验分享', '#AI应用', '#趣味探索'];
+  // Group tags by category (memoized)
+  const groupedTags = useMemo(() => {
+    const identityTags = ['#独立开发必备', '#博主素材', '#双重价值', '#可忽略'];
+    const themeTags = ['#模型动态', '#技术教程', '#深度洞察', '#经验分享', '#AI应用', '#趣味探索'];
 
-  const groupedTags = {
-    special: filteredTags.filter(t => t === '#VibeCoding'),
-    identities: filteredTags.filter(t => identityTags.includes(t)),
-    themes: filteredTags.filter(t => themeTags.includes(t)),
-    extra: filteredTags.filter(t => !identityTags.includes(t) && !themeTags.includes(t) && t !== '#VibeCoding'),
-  };
+    return {
+      special: filteredTags.filter(t => t === '#VibeCoding'),
+      identities: filteredTags.filter(t => identityTags.includes(t)),
+      themes: filteredTags.filter(t => themeTags.includes(t)),
+      extra: filteredTags.filter(t => !identityTags.includes(t) && !themeTags.includes(t) && t !== '#VibeCoding'),
+    };
+  }, [filteredTags]);
+
+  // Memoize callbacks
+  const handleClearTags = useCallback(() => clearTags(), [clearTags]);
+  const handleToggleTag = useCallback((tag: string) => toggleTag(tag), [toggleTag]);
 
   return (
     <div className="w-64 border-r border-border bg-background flex flex-col h-full">
@@ -41,7 +54,7 @@ export function TagFilter() {
           <h3 className="font-semibold text-sm">标签过滤</h3>
           {selectedTags.length > 0 && (
             <button
-              onClick={clearTags}
+              onClick={handleClearTags}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
               清除 ({selectedTags.length})
@@ -72,7 +85,7 @@ export function TagFilter() {
                   "text-xs cursor-pointer",
                   getTagStyle(tag)
                 )}
-                onClick={() => toggleTag(tag)}
+                onClick={() => handleToggleTag(tag)}
               >
                 {tag}
                 <X className="ml-1 h-3 w-3" />
@@ -96,7 +109,7 @@ export function TagFilter() {
                   title="特殊"
                   tags={groupedTags.special}
                   selectedTags={selectedTags}
-                  onToggle={toggleTag}
+                  onToggle={handleToggleTag}
                 />
               )}
 
@@ -105,7 +118,7 @@ export function TagFilter() {
                   title="身份标签"
                   tags={groupedTags.identities}
                   selectedTags={selectedTags}
-                  onToggle={toggleTag}
+                  onToggle={handleToggleTag}
                 />
               )}
 
@@ -114,7 +127,7 @@ export function TagFilter() {
                   title="主题标签"
                   tags={groupedTags.themes}
                   selectedTags={selectedTags}
-                  onToggle={toggleTag}
+                  onToggle={handleToggleTag}
                 />
               )}
 
@@ -123,7 +136,7 @@ export function TagFilter() {
                   title="其他"
                   tags={groupedTags.extra}
                   selectedTags={selectedTags}
-                  onToggle={toggleTag}
+                  onToggle={handleToggleTag}
                 />
               )}
             </>

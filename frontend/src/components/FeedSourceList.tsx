@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Plus } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Star, Trash2 } from "lucide-react";
 import { ScrollArea } from "./ui/scroll-area";
 import { Button } from "./ui/button";
 import { SourceIcon } from "./SourceIcon";
@@ -9,7 +9,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { RenameSourceDialog } from "./RenameSourceDialog";
 import { RenameCategoryDialog } from "./RenameCategoryDialog";
 import { EditIconDialog } from "./EditIconDialog";
-import { useRSSSources, useDeleteSource } from "../hooks/useQueries";
+import { useRSSSources, useDeleteSource, useArticleCounts, useEmptyTrash } from "../hooks/useQueries";
 import { useAppStore } from "../store/useAppStore";
 import { useToast } from "../hooks/useToast";
 import type { RSSSource } from "../types";
@@ -20,8 +20,10 @@ interface FeedSourceListProps {
 
 export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
   const { data: sources = [], isLoading } = useRSSSources();
-  const { selectedSourceId, selectedCategory, setSelectedSourceId, setSelectedCategory } = useAppStore();
+  const { data: counts } = useArticleCounts();
+  const { selectedSourceId, selectedCategory, setSelectedSourceId, setSelectedCategory, selectedView, setSelectedView } = useAppStore();
   const deleteMutation = useDeleteSource();
+  const emptyTrashMutation = useEmptyTrash();
   const { toast } = useToast();
 
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
@@ -49,6 +51,8 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
     // Only select category, do NOT toggle expansion
     // null for "全部" means show all articles
     setSelectedCategory(category === "全部" ? null : category);
+    // Reset view when selecting a category
+    setSelectedView?.(null);
   };
 
   const getSourcesByCategory = (category: string): RSSSource[] => {
@@ -149,12 +153,81 @@ export function FeedSourceList({ onAddSource }: FeedSourceListProps) {
       </div>
       <ScrollArea className="flex-1 h-0">
         <div className="p-2">
+          {/* Virtual Sources: Favorites and Trash */}
+          <div className="mb-2">
+            <button
+              onClick={() => {
+                setSelectedView('favorites');
+              }}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                selectedView === 'favorites'
+                  ? "bg-accent"
+                  : "hover:bg-accent/50"
+              }`}
+            >
+              <Star className="w-4 h-4 text-yellow-500" />
+              <span className="flex-1 text-left text-sm font-medium">收藏夹</span>
+              {counts && counts.favorite > 0 && (
+                <span className="text-muted-foreground text-xs">
+                  {counts.favorite}
+                </span>
+              )}
+            </button>
+          </div>
+
+          <div className="mb-2">
+            <button
+              onClick={() => {
+                setSelectedView('trash');
+              }}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
+                selectedView === 'trash'
+                  ? "bg-accent"
+                  : "hover:bg-accent/50"
+              }`}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                if (counts && counts.trashed > 0) {
+                  if (confirm(`确定要永久删除回收站中的 ${counts.trashed} 篇文章吗？此操作不可撤销！`)) {
+                    emptyTrashMutation.mutate(undefined, {
+                      onSuccess: (data) => {
+                        toast({
+                          title: "回收站已清空",
+                          description: `已删除 ${data.count} 篇文章`,
+                          variant: "success",
+                        });
+                      },
+                      onError: () => {
+                        toast({
+                          title: "操作失败",
+                          description: "清空回收站失败",
+                          variant: "error",
+                        });
+                      },
+                    });
+                  }
+                }
+              }}
+            >
+              <Trash2 className="w-4 h-4 text-muted-foreground" />
+              <span className="flex-1 text-left text-sm font-medium">回收站</span>
+              {counts && counts.trashed > 0 && (
+                <span className="text-muted-foreground text-xs">
+                  {counts.trashed}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* Separator */}
+          <div className="my-2 border-t border-border"></div>
+
           {/* Level 1: "全部" as top-level parent */}
           <div className="mb-2">
             <button
               onClick={() => handleSelectCategory("全部")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors ${
-                selectedCategory === null && selectedSourceId === null
+                selectedCategory === null && selectedSourceId === null && selectedView === null
                   ? "bg-accent"
                   : "hover:bg-accent/50"
               }`}

@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { Badge } from "./ui/badge";
 import type { Article } from "../types";
 import { cn } from "../lib/utils";
@@ -83,12 +84,15 @@ function sortTagsByPriority(labels?: Article["ai_labels"]): string[] {
   return tags;
 }
 
-export function AILabels({
+function AILabelsComponent({
   labels,
   status,
   mode = "compact",
   className,
 }: AILabelsProps) {
+  // Memoize sorted tags to avoid recalculating on every render
+  const sortedTags = useMemo(() => sortTagsByPriority(labels), [labels]);
+
   // 如果状态是 processing 或 error，显示状态徽章
   if (status === "processing" || status === "error") {
     const statusConfig = STATUS_BADGES[status];
@@ -103,9 +107,6 @@ export function AILabels({
   if (!labels || status === "pending") {
     return null;
   }
-
-  // 获取排序后的标签
-  const sortedTags = sortTagsByPriority(labels);
 
   // 如果没有标签，不显示
   if (sortedTags.length === 0) {
@@ -156,3 +157,6 @@ export function AILabels({
     </div>
   );
 }
+
+// Memoize the component to prevent unnecessary re-renders
+export const AILabels = memo(AILabelsComponent);

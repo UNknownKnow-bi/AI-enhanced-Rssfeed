@@ -7,12 +7,14 @@ import { ArticleDetail } from "./components/ArticleDetail";
 import { AddSourceDialog } from "./components/AddSourceDialog";
 import { Toaster } from "./components/ui/toaster";
 
-// Create a client
+// Create a client with optimized cache configuration
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       refetchOnWindowFocus: false,
       retry: 1,
+      staleTime: 5 * 60 * 1000, // 5 minutes - data is fresh for 5 min
+      gcTime: 10 * 60 * 1000, // 10 minutes - keep unused cache for 10 min
     },
   },
 });
@@ -25,14 +27,14 @@ export default function App() {
       <div className="h-screen w-full overflow-hidden">
         <PanelGroup direction="horizontal">
           {/* Feed Source List Panel */}
-          <Panel defaultSize={20} minSize={15} maxSize={30} className="overflow-hidden">
+          <Panel defaultSize={15} minSize={15} maxSize={30} className="overflow-hidden">
             <FeedSourceList onAddSource={() => setIsAddDialogOpen(true)} />
           </Panel>
 
           <PanelResizeHandle className="w-1 bg-border hover:bg-primary/50 transition-colors cursor-col-resize" />
 
           {/* Article List Panel */}
-          <Panel defaultSize={30} minSize={20} maxSize={50} className="overflow-hidden">
+          <Panel defaultSize={35} minSize={20} maxSize={50} className="overflow-hidden">
             <ArticleList />
           </Panel>
 

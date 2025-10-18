@@ -17,8 +17,13 @@ class ArticleResponse(ArticleBase):
     id: UUID
     source_id: UUID
     guid: str
-    is_read: bool
     created_at: datetime
+
+    # Article status fields
+    is_read: bool
+    is_favorite: bool
+    is_trashed: bool
+    trashed_at: Optional[datetime] = None
 
     # Include source info
     source_name: Optional[str] = None
@@ -45,8 +50,13 @@ class ArticleListResponse(BaseModel):
     description: Optional[str] = None
     cover_image: Optional[str] = None
     pub_date: Optional[datetime] = None
-    is_read: bool
     created_at: datetime
+
+    # Article status fields
+    is_read: bool
+    is_favorite: bool
+    is_trashed: bool
+    trashed_at: Optional[datetime] = None
 
     # Source info
     source_name: str
@@ -63,3 +73,16 @@ class ArticleListResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# Request schemas for status updates
+class ArticleReadUpdate(BaseModel):
+    is_read: bool
+
+
+class ArticleFavoriteUpdate(BaseModel):
+    is_favorite: bool
+
+
+class EmptyTrashRequest(BaseModel):
+    confirm: bool = False

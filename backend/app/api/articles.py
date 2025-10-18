@@ -1,12 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from typing import List, Optional
 from uuid import UUID
 
 from app.core.database import get_db
-from app.schemas import ArticleResponse, ArticleListResponse
+from app.schemas import ArticleResponse, ArticleListResponse, ArticleReadUpdate, ArticleFavoriteUpdate, EmptyTrashRequest
 from app.models import Article, RSSSource
+from app.services import article_service
+
+# Mock user ID for now (will be replaced with actual auth later)
+MOCK_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 router = APIRouter(prefix="/api", tags=["articles"])
 
@@ -16,17 +20,24 @@ async def list_articles(
     source_id: Optional[UUID] = Query(None, description="Filter by RSS source ID"),
     category: Optional[str] = Query(None, description="Filter by category"),
     tags: Optional[str] = Query(None, description="Filter by AI tags (comma-separated, AND logic)"),
+    is_read: Optional[bool] = Query(None, description="Filter by read status"),
+    is_favorite: Optional[bool] = Query(None, description="Filter by favorite status"),
+    is_trashed: Optional[bool] = Query(False, description="Filter by trash status (default: exclude trashed)"),
     limit: int = Query(50, ge=1, le=100, description="Number of articles to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    List articles with optional filtering by source, category, and/or AI tags.
+    List articles with optional filtering by source, category, AI tags, and status.
     Priority: source_id > category > tags (combined with AND logic).
+    By default, excludes trashed articles unless is_trashed is explicitly set.
     """
     query = select(Article, RSSSource).join(
         RSSSource, Article.source_id == RSSSource.id
     )
+
+    # Always filter by trash status (default: exclude trashed)
+    query = query.where(Article.is_trashed == is_trashed)
 
     # Filter by source if provided (takes priority over category)
     if source_id:
@@ -34,6 +45,14 @@ async def list_articles(
     # Otherwise filter by category if provided
     elif category:
         query = query.where(RSSSource.category == category)
+
+    # Filter by read status if provided
+    if is_read is not None:
+        query = query.where(Article.is_read == is_read)
+
+    # Filter by favorite status if provided
+    if is_favorite is not None:
+        query = query.where(Article.is_favorite == is_favorite)
 
     # Filter by tags if provided (combined with AND logic)
     if tags:
@@ -70,8 +89,15 @@ async def list_articles(
             "description": article.description,
             "cover_image": article.cover_image,
             "pub_date": article.pub_date,
-            "is_read": article.is_read,
             "created_at": article.created_at,
+
+            # Article status fields
+            "is_read": article.is_read,
+            "is_favorite": article.is_favorite,
+            "is_trashed": article.is_trashed,
+            "trashed_at": article.trashed_at,
+
+            # Source info
             "source_name": source.title,
             "source_icon": source.icon,
 
@@ -123,6 +149,21 @@ async def get_available_tags(
     return sorted(list(tags))
 
 
+@router.get("/articles/counts")
+async def get_article_counts(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get counts of articles in different states (unread, favorite, trash).
+    """
+    counts = await article_service.get_article_counts(
+        db=db,
+        user_id=MOCK_USER_ID
+    )
+
+    return counts
+
+
 @router.get("/articles/{article_id}", response_model=ArticleResponse)
 async def get_article(
     article_id: UUID,
@@ -154,8 +195,15 @@ async def get_article(
         "content": article.content,
         "cover_image": article.cover_image,
         "pub_date": article.pub_date,
-        "is_read": article.is_read,
         "created_at": article.created_at,
+
+        # Article status fields
+        "is_read": article.is_read,
+        "is_favorite": article.is_favorite,
+        "is_trashed": article.is_trashed,
+        "trashed_at": article.trashed_at,
+
+        # Source info
         "source_name": source.title,
         "source_icon": source.icon,
 
@@ -175,23 +223,195 @@ async def get_article(
     return ArticleResponse(**article_dict)
 
 
-@router.patch("/articles/{article_id}/read")
+@router.patch("/articles/{article_id}/read", response_model=ArticleResponse)
 async def mark_article_read(
+    article_id: UUID,
+    update_data: ArticleReadUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Mark an article as read or unread.
+    """
+    article = await article_service.mark_as_read(
+        db=db,
+        article_id=article_id,
+        user_id=MOCK_USER_ID,
+        is_read=update_data.is_read
+    )
+
+    # Fetch source info for response
+    result = await db.execute(
+        select(RSSSource).where(RSSSource.id == article.source_id)
+    )
+    source = result.scalar_one()
+
+    # Build response
+    article_dict = {
+        "id": article.id,
+        "source_id": article.source_id,
+        "guid": article.guid,
+        "title": article.title,
+        "link": article.link,
+        "description": article.description,
+        "content": article.content,
+        "cover_image": article.cover_image,
+        "pub_date": article.pub_date,
+        "created_at": article.created_at,
+        "is_read": article.is_read,
+        "is_favorite": article.is_favorite,
+        "is_trashed": article.is_trashed,
+        "trashed_at": article.trashed_at,
+        "source_name": source.title,
+        "source_icon": source.icon,
+        "ai_labels": article.ai_labels,
+        "ai_label_status": article.ai_label_status,
+        "vibe_coding": article.ai_labels.get("vibe_coding", False) if article.ai_labels else None,
+        "ai_summary": article.ai_summary,
+        "ai_summary_status": article.ai_summary_status,
+        "ai_summary_generated_at": article.ai_summary_generated_at,
+    }
+
+    return ArticleResponse(**article_dict)
+
+
+@router.patch("/articles/{article_id}/favorite", response_model=ArticleResponse)
+async def toggle_article_favorite(
+    article_id: UUID,
+    update_data: ArticleFavoriteUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Toggle article favorite status.
+    """
+    article = await article_service.toggle_favorite(
+        db=db,
+        article_id=article_id,
+        user_id=MOCK_USER_ID,
+        is_favorite=update_data.is_favorite
+    )
+
+    # Fetch source info for response
+    result = await db.execute(
+        select(RSSSource).where(RSSSource.id == article.source_id)
+    )
+    source = result.scalar_one()
+
+    # Build response
+    article_dict = {
+        "id": article.id,
+        "source_id": article.source_id,
+        "guid": article.guid,
+        "title": article.title,
+        "link": article.link,
+        "description": article.description,
+        "content": article.content,
+        "cover_image": article.cover_image,
+        "pub_date": article.pub_date,
+        "created_at": article.created_at,
+        "is_read": article.is_read,
+        "is_favorite": article.is_favorite,
+        "is_trashed": article.is_trashed,
+        "trashed_at": article.trashed_at,
+        "source_name": source.title,
+        "source_icon": source.icon,
+        "ai_labels": article.ai_labels,
+        "ai_label_status": article.ai_label_status,
+        "vibe_coding": article.ai_labels.get("vibe_coding", False) if article.ai_labels else None,
+        "ai_summary": article.ai_summary,
+        "ai_summary_status": article.ai_summary_status,
+        "ai_summary_generated_at": article.ai_summary_generated_at,
+    }
+
+    return ArticleResponse(**article_dict)
+
+
+@router.post("/articles/{article_id}/trash")
+async def trash_article(
     article_id: UUID,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Mark an article as read
+    Move an article to trash (soft delete).
     """
-    result = await db.execute(
-        select(Article).where(Article.id == article_id)
+    await article_service.move_to_trash(
+        db=db,
+        article_id=article_id,
+        user_id=MOCK_USER_ID
     )
-    article = result.scalar_one_or_none()
 
-    if not article:
-        raise HTTPException(status_code=404, detail="Article not found")
+    return {"message": "Article moved to trash"}
 
-    article.is_read = True
-    await db.commit()
 
-    return {"message": "Article marked as read"}
+@router.post("/articles/{article_id}/restore", response_model=ArticleResponse)
+async def restore_article(
+    article_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Restore an article from trash.
+    """
+    article = await article_service.restore_from_trash(
+        db=db,
+        article_id=article_id,
+        user_id=MOCK_USER_ID
+    )
+
+    # Fetch source info for response
+    result = await db.execute(
+        select(RSSSource).where(RSSSource.id == article.source_id)
+    )
+    source = result.scalar_one()
+
+    # Build response
+    article_dict = {
+        "id": article.id,
+        "source_id": article.source_id,
+        "guid": article.guid,
+        "title": article.title,
+        "link": article.link,
+        "description": article.description,
+        "content": article.content,
+        "cover_image": article.cover_image,
+        "pub_date": article.pub_date,
+        "created_at": article.created_at,
+        "is_read": article.is_read,
+        "is_favorite": article.is_favorite,
+        "is_trashed": article.is_trashed,
+        "trashed_at": article.trashed_at,
+        "source_name": source.title,
+        "source_icon": source.icon,
+        "ai_labels": article.ai_labels,
+        "ai_label_status": article.ai_label_status,
+        "vibe_coding": article.ai_labels.get("vibe_coding", False) if article.ai_labels else None,
+        "ai_summary": article.ai_summary,
+        "ai_summary_status": article.ai_summary_status,
+        "ai_summary_generated_at": article.ai_summary_generated_at,
+    }
+
+    return ArticleResponse(**article_dict)
+
+
+@router.delete("/articles/trash")
+async def empty_trash(
+    request: EmptyTrashRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Permanently delete all trashed articles (hard delete).
+    Requires confirmation.
+    """
+    if not request.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation required to empty trash"
+        )
+
+    deleted_count = await article_service.empty_trash(
+        db=db,
+        user_id=MOCK_USER_ID
+    )
+
+    return {
+        "message": f"Successfully deleted {deleted_count} articles from trash",
+        "count": deleted_count
+    }

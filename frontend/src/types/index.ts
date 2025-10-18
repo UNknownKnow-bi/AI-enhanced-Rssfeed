@@ -21,10 +21,15 @@ export interface Article {
   content?: string;
   cover_image?: string;
   pub_date?: string;
-  is_read: boolean;
   created_at: string;
   source_name: string;
   source_icon: string;
+
+  // Article status fields
+  is_read: boolean;
+  is_favorite: boolean;
+  is_trashed: boolean;
+  trashed_at?: string | null;
 
   // AI Labeling fields
   ai_labels?: {

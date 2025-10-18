@@ -188,6 +188,8 @@ class AILabeler:
         # Handle both array and single object responses
         if isinstance(api_response, list):
             labels_list = api_response
+        elif isinstance(api_response, dict) and "articles" in api_response:
+            labels_list = api_response["articles"]
         elif isinstance(api_response, dict) and "labels" in api_response:
             labels_list = api_response["labels"]
         elif isinstance(api_response, dict) and "results" in api_response:
@@ -226,6 +228,7 @@ class AILabeler:
     async def _trigger_summarization(self, article_ids: List):
         """
         Trigger summarization for a list of article IDs in a background task.
+        Each article gets its own database session for concurrency safety.
 
         Args:
             article_ids: List of article IDs to summarize
@@ -234,27 +237,19 @@ class AILabeler:
             # Import here to avoid circular dependency
             from app.services.ai_summarizer import get_ai_summarizer
 
-            async with AsyncSessionLocal() as db:
-                summarizer = get_ai_summarizer()
-                # Query articles by IDs
-                result = await db.execute(
-                    select(Article)
-                    .options(selectinload(Article.source))
-                    .where(Article.id.in_(article_ids))
-                )
-                articles = result.scalars().all()
+            if not article_ids:
+                return
 
-                if not articles:
-                    return
+            logger.info(f"Triggering summarization for {len(article_ids)} articles")
 
-                logger.info(f"Processing {len(articles)} articles for summarization")
+            summarizer = get_ai_summarizer()
 
-                # Process articles concurrently
-                tasks = [summarizer.process_single_article(db, article) for article in articles]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Process articles concurrently - each article uses its own session
+            tasks = [summarizer._process_article_by_id(article_id) for article_id in article_ids]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                success_count = sum(1 for r in results if r is True)
-                logger.info(f"Summarization triggered: {success_count}/{len(articles)} successful")
+            success_count = sum(1 for r in results if r is True)
+            logger.info(f"Summarization triggered: {success_count}/{len(article_ids)} successful")
 
         except Exception as e:
             logger.error(f"Error triggering summarization: {e}")
@@ -262,6 +257,7 @@ class AILabeler:
     async def process_pending_articles(self, db: AsyncSession, max_batches: int = None) -> int:
         """
         Process pending articles in batches.
+        Collects all successfully labeled articles and triggers summarization once at the end.
 
         Args:
             db: Database session
@@ -272,6 +268,7 @@ class AILabeler:
         """
         total_processed = 0
         batch_count = 0
+        all_articles_to_summarize = []  # Collect all article IDs for final trigger
 
         while True:
             # Check if we've hit the max batch limit
@@ -298,14 +295,21 @@ class AILabeler:
                 batch_count += 1
                 logger.info(f"Processing batch {batch_count}: {len(articles)} articles for AI labeling")
 
-                # Update status to 'processing'
+                # Update status to 'processing' with conditional check
                 article_ids = [article.id for article in articles]
-                await db.execute(
+                result = await db.execute(
                     update(Article)
-                    .where(Article.id.in_(article_ids))
+                    .where(Article.id.in_(article_ids), Article.ai_label_status == 'pending')
                     .values(ai_label_status='processing')
                 )
                 await db.commit()
+
+                # Check if any articles were actually updated
+                if result.rowcount == 0:
+                    logger.info(f"Batch {batch_count}: All articles already being processed, skipping")
+                    continue
+                elif result.rowcount < len(article_ids):
+                    logger.info(f"Batch {batch_count}: Only {result.rowcount}/{len(article_ids)} articles updated to processing")
 
                 # Build messages
                 messages = self.build_messages(articles)
@@ -339,28 +343,43 @@ class AILabeler:
                     if article_id_str in labels_map:
                         labels = labels_map[article_id_str]
 
-                        # Update article with labels (same logic for ignored or not)
-                        await db.execute(
-                            update(Article)
-                            .where(Article.id == article.id)
-                            .values(
-                                ai_labels=labels,
-                                ai_label_status='done',
-                                ai_label_error=None
-                            )
-                        )
-                        success_count += 1
-                        logger.info(f"Successfully labeled article {article.id}: {labels}")
-
-                        # Check if article should be summarized (not ignored or error)
+                        # Check if article should be auto-trashed (labeled as 可忽略)
                         identities = labels.get('identities', [])
-                        if '#可忽略' not in identities:
-                            articles_to_summarize.append(article.id)
+                        should_trash = '#可忽略' in identities
+
+                        # Prepare update values
+                        update_values = {
+                            'ai_labels': labels,
+                            'ai_label_status': 'done',
+                            'ai_label_error': None
+                        }
+
+                        # Auto-trash articles labeled as 可忽略
+                        if should_trash:
+                            update_values['is_trashed'] = True
+                            update_values['trashed_at'] = datetime.now(timezone.utc)
+                            logger.info(f"Auto-trashing article {article.id} (labeled as #可忽略)")
+
+                        # Update article with labels using conditional check
+                        result = await db.execute(
+                            update(Article)
+                            .where(Article.id == article.id, Article.ai_label_status == 'processing')
+                            .values(**update_values)
+                        )
+                        if result.rowcount > 0:
+                            success_count += 1
+                            logger.info(f"Successfully labeled article {article.id}: {labels}")
+
+                            # Check if article should be summarized (not ignored)
+                            if not should_trash:
+                                articles_to_summarize.append(article.id)
+                        else:
+                            logger.warning(f"Article {article.id} status changed before labeling could complete")
                     else:
                         # No labels found for this article
                         await db.execute(
                             update(Article)
-                            .where(Article.id == article.id)
+                            .where(Article.id == article.id, Article.ai_label_status == 'processing')
                             .values(
                                 ai_label_status='error',
                                 ai_label_error='No labels returned for this article'
@@ -372,14 +391,14 @@ class AILabeler:
                 total_processed += success_count
                 logger.info(f"Batch {batch_count} complete: {success_count}/{len(articles)} labeled (total: {total_processed})")
 
-                # Trigger summarization for successfully labeled articles (non-blocking)
+                # Collect articles for summarization (will trigger once at end)
                 if articles_to_summarize:
-                    logger.info(f"Triggering summarization for {len(articles_to_summarize)} articles")
-                    asyncio.create_task(self._trigger_summarization(articles_to_summarize))
+                    all_articles_to_summarize.extend(articles_to_summarize)
+                    logger.info(f"Batch {batch_count}: Added {len(articles_to_summarize)} articles to summarization queue (total: {len(all_articles_to_summarize)})")
 
                 # Small delay between batches to respect rate limits
                 if articles and len(articles) == settings.AI_BATCH_SIZE:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(settings.AI_LABEL_BATCH_DELAY_SECONDS)
 
             except Exception as e:
                 logger.error(f"Error in batch {batch_count}: {e}")
@@ -403,11 +422,19 @@ class AILabeler:
                 # Continue to next batch instead of stopping completely
                 continue
 
+        # All batches complete - trigger summarization once for all labeled articles
+        if all_articles_to_summarize:
+            logger.info(f"All labeling batches complete. Triggering summarization for {len(all_articles_to_summarize)} articles")
+            asyncio.create_task(self._trigger_summarization(all_articles_to_summarize))
+        else:
+            logger.info("All labeling batches complete. No articles to summarize.")
+
         return total_processed
 
     async def process_error_articles(self, db: AsyncSession, max_batches: int = None) -> int:
         """
         Process articles with error status in batches (retry failed labeling).
+        Collects all successfully labeled articles and triggers summarization once at the end.
 
         Args:
             db: Database session
@@ -418,6 +445,7 @@ class AILabeler:
         """
         total_processed = 0
         batch_count = 0
+        all_articles_to_summarize = []  # Collect all article IDs for final trigger
 
         while True:
             # Check if we've hit the max batch limit
@@ -444,14 +472,21 @@ class AILabeler:
                 batch_count += 1
                 logger.info(f"Retrying batch {batch_count}: {len(articles)} error articles for AI labeling")
 
-                # Update status to 'processing' to prevent concurrent processing
+                # Update status to 'processing' with conditional check
                 article_ids = [article.id for article in articles]
-                await db.execute(
+                result = await db.execute(
                     update(Article)
-                    .where(Article.id.in_(article_ids))
+                    .where(Article.id.in_(article_ids), Article.ai_label_status == 'error')
                     .values(ai_label_status='processing')
                 )
                 await db.commit()
+
+                # Check if any articles were actually updated
+                if result.rowcount == 0:
+                    logger.info(f"Retry batch {batch_count}: All articles already being processed, skipping")
+                    continue
+                elif result.rowcount < len(article_ids):
+                    logger.info(f"Retry batch {batch_count}: Only {result.rowcount}/{len(article_ids)} articles updated to processing")
 
                 # Build messages
                 messages = self.build_messages(articles)
@@ -482,28 +517,50 @@ class AILabeler:
 
                 # Update articles with labels (per-article handling for partial success)
                 success_count = 0
+                articles_to_summarize = []  # Track articles that need summarization in this batch
+
                 for article in articles:
                     article_id_str = str(article.id)
                     if article_id_str in labels_map:
                         labels = labels_map[article_id_str]
 
-                        # Update article with labels - success case
-                        await db.execute(
+                        # Check if article should be auto-trashed (labeled as 可忽略)
+                        identities = labels.get('identities', [])
+                        should_trash = '#可忽略' in identities
+
+                        # Prepare update values
+                        update_values = {
+                            'ai_labels': labels,
+                            'ai_label_status': 'done',
+                            'ai_label_error': None
+                        }
+
+                        # Auto-trash articles labeled as 可忽略
+                        if should_trash:
+                            update_values['is_trashed'] = True
+                            update_values['trashed_at'] = datetime.now(timezone.utc)
+                            logger.info(f"Auto-trashing article {article.id} (retry, labeled as #可忽略)")
+
+                        # Update article with labels using conditional check
+                        result = await db.execute(
                             update(Article)
-                            .where(Article.id == article.id)
-                            .values(
-                                ai_labels=labels,
-                                ai_label_status='done',
-                                ai_label_error=None
-                            )
+                            .where(Article.id == article.id, Article.ai_label_status == 'processing')
+                            .values(**update_values)
                         )
-                        success_count += 1
-                        logger.info(f"Successfully retry-labeled article {article.id}: {labels}")
+                        if result.rowcount > 0:
+                            success_count += 1
+                            logger.info(f"Successfully retry-labeled article {article.id}: {labels}")
+
+                            # Check if article should be summarized (not ignored)
+                            if not should_trash:
+                                articles_to_summarize.append(article.id)
+                        else:
+                            logger.warning(f"Retry: Article {article.id} status changed before labeling could complete")
                     else:
-                        # No labels found for this article - mark as error
+                        # No labels found for this article - mark as error with conditional check
                         await db.execute(
                             update(Article)
-                            .where(Article.id == article.id)
+                            .where(Article.id == article.id, Article.ai_label_status == 'processing')
                             .values(
                                 ai_label_status='error',
                                 ai_label_error='Retry failed: No labels returned for this article'
@@ -514,6 +571,11 @@ class AILabeler:
                 await db.commit()
                 total_processed += success_count
                 logger.info(f"Retry batch {batch_count} complete: {success_count}/{len(articles)} labeled (total: {total_processed})")
+
+                # Collect articles for summarization (will trigger once at end)
+                if articles_to_summarize:
+                    all_articles_to_summarize.extend(articles_to_summarize)
+                    logger.info(f"Retry batch {batch_count}: Added {len(articles_to_summarize)} articles to summarization queue (total: {len(all_articles_to_summarize)})")
 
                 # Wait between batches (configured delay)
                 if articles and len(articles) == settings.AI_BATCH_SIZE:
@@ -544,6 +606,13 @@ class AILabeler:
 
                 # Continue to next batch instead of stopping completely
                 continue
+
+        # All retry batches complete - trigger summarization once for all labeled articles
+        if all_articles_to_summarize:
+            logger.info(f"All retry batches complete. Triggering summarization for {len(all_articles_to_summarize)} articles")
+            asyncio.create_task(self._trigger_summarization(all_articles_to_summarize))
+        else:
+            logger.info("All retry batches complete. No articles to summarize.")
 
         return total_processed
 

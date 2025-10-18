@@ -8,7 +8,7 @@ export function sanitizeHTMLContent(html: string): string {
   if (!html) return '';
 
   // Configure DOMPurify with strict security settings
-  const config: DOMPurify.Config = {
+  const config: any = {
     // Allow only safe HTML tags for article content
     ALLOWED_TAGS: [
       'p', 'br', 'span', 'div',
@@ -63,13 +63,13 @@ export function sanitizeHTMLContent(html: string): string {
     RETURN_DOM_IMPORT: false,
   };
 
-  // Sanitize the HTML
-  let sanitized = DOMPurify.sanitize(html, config);
+  // Sanitize the HTML - explicitly cast to string
+  let sanitized = String(DOMPurify.sanitize(html, config));
 
   // Post-processing: ensure all external links have security attributes
   sanitized = sanitized.replace(
     /<a\s+([^>]*href=["'][^"']*["'][^>]*)>/gi,
-    (match, attrs) => {
+    (_match: string, attrs: string) => {
       // Add target and rel if not present
       let newAttrs = attrs;
       if (!newAttrs.includes('target=')) {
@@ -85,7 +85,7 @@ export function sanitizeHTMLContent(html: string): string {
   // Post-processing: add loading="lazy" to images
   sanitized = sanitized.replace(
     /<img\s+([^>]*)>/gi,
-    (match, attrs) => {
+    (_match: string, attrs: string) => {
       let newAttrs = attrs;
       if (!newAttrs.includes('loading=')) {
         newAttrs += ' loading="lazy"';
@@ -109,10 +109,10 @@ export function stripHTMLTags(html: string): string {
   if (!html) return '';
 
   // First sanitize to remove dangerous content
-  const sanitized = DOMPurify.sanitize(html, {
+  const sanitized = String(DOMPurify.sanitize(html, {
     ALLOWED_TAGS: [],
     KEEP_CONTENT: true,
-  });
+  }));
 
   // Clean up excessive whitespace
   return sanitized

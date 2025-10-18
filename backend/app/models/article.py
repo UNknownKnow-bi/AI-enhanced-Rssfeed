@@ -24,8 +24,13 @@ class Article(Base):
     content = Column(Text, nullable=True)
     cover_image = Column(String, nullable=True)
     pub_date = Column(DateTime(timezone=True), nullable=True)
-    is_read = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=get_utc_now, nullable=False)
+
+    # Article status fields
+    is_read = Column(Boolean, default=False, nullable=False)
+    is_favorite = Column(Boolean, default=False, nullable=False)
+    is_trashed = Column(Boolean, default=False, nullable=False)
+    trashed_at = Column(DateTime(timezone=True), nullable=True)
 
     # AI Labeling fields
     ai_labels = Column(JSONB, nullable=True)  # Stores AI-generated labels as JSON

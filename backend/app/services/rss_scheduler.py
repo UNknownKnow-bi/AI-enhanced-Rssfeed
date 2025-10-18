@@ -45,15 +45,6 @@ class RSSScheduler:
                 replace_existing=True,
             )
 
-            # Schedule AI summary generation every N minutes
-            self.scheduler.add_job(
-                self.process_pending_summaries,
-                'interval',
-                minutes=settings.AI_SUMMARY_INTERVAL_MINUTES,
-                id='process_ai_summaries',
-                replace_existing=True,
-            )
-
             # Schedule retry of error summaries every N minutes
             self.scheduler.add_job(
                 self.retry_error_summaries,
@@ -67,7 +58,6 @@ class RSSScheduler:
             self.is_running = True
             logger.info(f"RSS Scheduler started. Fetching feeds every {settings.SCRAPE_INTERVAL_MINUTES} minutes")
             logger.info(f"AI Retry Scheduler started. Retrying error labels every {settings.AI_RETRY_INTERVAL_MINUTES} minutes")
-            logger.info(f"AI Summary Scheduler started. Processing summaries every {settings.AI_SUMMARY_INTERVAL_MINUTES} minutes")
             logger.info(f"AI Summary Retry Scheduler started. Retrying error summaries every {settings.AI_SUMMARY_RETRY_INTERVAL_MINUTES} minutes")
 
     def shutdown(self):
@@ -232,54 +222,6 @@ class RSSScheduler:
 
         except Exception as e:
             logger.error(f"Error in process_error_ai_labeling background task: {e}")
-
-    async def process_pending_summaries(self):
-        """Process pending articles for AI summarization"""
-        logger.info("Starting pending summaries processing cycle")
-
-        async with self.get_db_session() as db:
-            try:
-                # Check if there are any pending summaries first
-                result = await db.execute(
-                    select(Article)
-                    .where(
-                        Article.ai_summary_status == 'pending',
-                        Article.ai_label_status == 'done'
-                    )
-                    .limit(1)
-                )
-                has_pending = result.scalar_one_or_none() is not None
-
-                if not has_pending:
-                    logger.info("No pending summaries found, skipping processing cycle")
-                    return
-
-                logger.info("Found pending summaries, triggering processing")
-
-                # Trigger processing in background task
-                asyncio.create_task(self.process_ai_summaries_background())
-
-            except Exception as e:
-                logger.error(f"Error in process_pending_summaries: {e}")
-                await db.rollback()
-
-    async def process_ai_summaries_background(self):
-        """Process pending summaries in a background task"""
-        try:
-            logger.info("Starting AI summary generation task for pending articles")
-
-            # Create a new database session for this background task
-            async with AsyncSessionLocal() as db:
-                summarizer = get_ai_summarizer()
-                processed_count = await summarizer.process_pending_summaries(db)
-
-                if processed_count > 0:
-                    logger.info(f"AI summary generation completed: {processed_count} articles summarized")
-                else:
-                    logger.info("AI summary generation completed: no articles processed")
-
-        except Exception as e:
-            logger.error(f"Error in process_ai_summaries_background task: {e}")
 
     async def retry_error_summaries(self):
         """Retry AI summarization for articles with error status"""

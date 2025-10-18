@@ -6,7 +6,7 @@ from .rss_source import (
     RSSValidateRequest,
     RSSValidateResponse,
 )
-from .article import ArticleBase, ArticleResponse, ArticleListResponse
+from .article import ArticleBase, ArticleResponse, ArticleListResponse, ArticleReadUpdate, ArticleFavoriteUpdate, EmptyTrashRequest
 
 __all__ = [
     "RSSSourceBase",
@@ -18,4 +18,7 @@ __all__ = [
     "ArticleBase",
     "ArticleResponse",
     "ArticleListResponse",
+    "ArticleReadUpdate",
+    "ArticleFavoriteUpdate",
+    "EmptyTrashRequest",
 ]

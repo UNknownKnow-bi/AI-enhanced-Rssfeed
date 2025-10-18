@@ -1,22 +1,109 @@
-import { Clock, Sparkles, ExternalLink, ChevronDown, ChevronUp, Copy, Loader2 } from "lucide-react";
+import { Clock, Sparkles, ExternalLink, ChevronDown, ChevronUp, Copy, Loader2, Star, Trash2 } from "lucide-react";
 import { ScrollArea } from "./ui/scroll-area";
 import { Badge } from "./ui/badge";
 import { Separator } from "./ui/separator";
 import { Button } from "./ui/button";
 import { SourceIcon } from "./SourceIcon";
 import { AILabels } from "./AILabels";
-import { useArticle } from "../hooks/useQueries";
+import { useArticle, useMarkAsRead, useToggleFavorite, useTrashArticle } from "../hooks/useQueries";
 import { useAppStore } from "../store/useAppStore";
 import { sanitizeHTMLContent } from "../lib/sanitizeContent";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { useState } from "react";
+import { useState, useMemo, memo, useEffect } from "react";
 import { toast } from "../hooks/useToast";
 
+// Memoize ReactMarkdown component to prevent re-parsing on every render
+const MemoizedMarkdown = memo(ReactMarkdown);
+
 export function ArticleDetail() {
-  const { selectedArticleId } = useAppStore();
+  const { selectedArticleId, setSelectedArticleId } = useAppStore();
   const { data: article, isLoading } = useArticle(selectedArticleId);
   const [isSummaryExpanded, setIsSummaryExpanded] = useState(true);
+
+  const markAsReadMutation = useMarkAsRead();
+  const toggleFavoriteMutation = useToggleFavorite();
+  const trashArticleMutation = useTrashArticle();
+
+  // Auto-mark as read after 2 seconds
+  useEffect(() => {
+    if (article && !article.is_read) {
+      const timer = setTimeout(() => {
+        markAsReadMutation.mutate({ articleId: article.id, isRead: true });
+      }, 2000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [article?.id, article?.is_read]);
+
+  const handleToggleFavorite = () => {
+    if (!article) return;
+    toggleFavoriteMutation.mutate(
+      { articleId: article.id, isFavorite: !article.is_favorite },
+      {
+        onSuccess: () => {
+          toast({
+            title: article.is_favorite ? "已取消收藏" : "已加入收藏",
+            variant: "success",
+          });
+        },
+        onError: () => {
+          toast({
+            title: "操作失败",
+            description: "请稍后重试",
+            variant: "destructive",
+          });
+        },
+      }
+    );
+  };
+
+  const handleTrash = () => {
+    if (!article) return;
+    if (confirm("确定要将此文章移至回收站吗？")) {
+      trashArticleMutation.mutate(article.id, {
+        onSuccess: () => {
+          toast({
+            title: "已移至回收站",
+            variant: "success",
+          });
+          // Close article detail view
+          setSelectedArticleId(null);
+        },
+        onError: () => {
+          toast({
+            title: "操作失败",
+            description: "请稍后重试",
+            variant: "destructive",
+          });
+        },
+      });
+    }
+  };
+
+  // Memoize sanitized HTML content to avoid re-sanitizing on every render
+  const sanitizedContent = useMemo(
+    () => article?.content ? sanitizeHTMLContent(article.content) : '',
+    [article?.content]
+  );
+
+  // Memoize formatted date
+  const formattedDate = useMemo(
+    () => {
+      if (!article) return "未知时间";
+      const dateString = article.pub_date || article.created_at;
+      if (!dateString) return "未知时间";
+      const date = new Date(dateString);
+      return date.toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    },
+    [article?.pub_date, article?.created_at]
+  );
 
   if (!selectedArticleId) {
     return (
@@ -43,18 +130,6 @@ export function ArticleDetail() {
       </div>
     );
   }
-
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return "未知时间";
-    const date = new Date(dateString);
-    return date.toLocaleString("zh-CN", {
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  };
 
   const handleCopySummary = () => {
     if (article?.ai_summary) {
@@ -144,9 +219,9 @@ export function ArticleDetail() {
 
         {status === 'success' && article?.ai_summary && isSummaryExpanded && (
           <div className="prose prose-sm prose-gray max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <MemoizedMarkdown remarkPlugins={[remarkGfm]}>
               {article.ai_summary}
-            </ReactMarkdown>
+            </MemoizedMarkdown>
           </div>
         )}
 
@@ -171,18 +246,44 @@ export function ArticleDetail() {
                 <p className="text-sm font-medium">{article.source_name}</p>
                 <div className="flex items-center gap-1 text-xs text-muted-foreground">
                   <Clock className="w-3 h-3" />
-                  <span>{formatDate(article.pub_date || article.created_at)}</span>
+                  <span>{formattedDate}</span>
                 </div>
               </div>
-              <Button variant="outline" size="sm" asChild>
-                <a href={article.link} target="_blank" rel="noopener noreferrer">
-                  <ExternalLink className="w-4 h-4 mr-2" />
-                  原文链接
-                </a>
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleToggleFavorite}
+                  disabled={toggleFavoriteMutation.isPending}
+                  title={article.is_favorite ? "取消收藏" : "收藏"}
+                >
+                  <Star
+                    className={`w-4 h-4 ${
+                      article.is_favorite ? "fill-yellow-400 text-yellow-400" : ""
+                    }`}
+                  />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleTrash}
+                  disabled={trashArticleMutation.isPending}
+                  title="移至回收站"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+                <Button variant="outline" size="sm" asChild>
+                  <a href={article.link} target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="w-4 h-4 mr-2" />
+                    原文链接
+                  </a>
+                </Button>
+              </div>
             </div>
 
-            <h1 className="text-2xl font-bold mb-4">{article.title}</h1>
+            <h1 className={`text-2xl font-bold mb-4 ${!article.is_read ? "font-extrabold" : ""}`}>
+              {article.title}
+            </h1>
 
             {/* AI标签 - Full模式 */}
             {article.ai_labels && (
@@ -216,11 +317,11 @@ export function ArticleDetail() {
 
           {/* Content */}
           <div className="prose prose-gray max-w-none">
-            {article.content && (
+            {sanitizedContent && (
               <div
                 className="leading-relaxed"
                 dangerouslySetInnerHTML={{
-                  __html: sanitizeHTMLContent(article.content)
+                  __html: sanitizedContent
                 }}
               />
             )}

@@ -40,6 +40,9 @@ export const fetchArticles = async (
   sourceId?: string,
   category?: string,
   tags?: string[],
+  isRead?: boolean,
+  isFavorite?: boolean,
+  isTrashed?: boolean,
   limit: number = 50,
   offset: number = 0
 ): Promise<Article[]> => {
@@ -53,6 +56,16 @@ export const fetchArticles = async (
   if (tags && tags.length > 0) {
     params.tags = tags.join(',');
   }
+  // Add status filters
+  if (isRead !== undefined) {
+    params.is_read = isRead;
+  }
+  if (isFavorite !== undefined) {
+    params.is_favorite = isFavorite;
+  }
+  if (isTrashed !== undefined) {
+    params.is_trashed = isTrashed;
+  }
   const response = await api.get<Article[]>('/api/articles', { params });
   return response.data;
 };
@@ -62,8 +75,35 @@ export const fetchArticle = async (articleId: string): Promise<Article> => {
   return response.data;
 };
 
-export const markArticleAsRead = async (articleId: string): Promise<void> => {
-  await api.patch(`/api/articles/${articleId}/read`);
+export const markArticleAsRead = async (articleId: string, isRead: boolean): Promise<Article> => {
+  const response = await api.patch<Article>(`/api/articles/${articleId}/read`, { is_read: isRead });
+  return response.data;
+};
+
+export const toggleArticleFavorite = async (articleId: string, isFavorite: boolean): Promise<Article> => {
+  const response = await api.patch<Article>(`/api/articles/${articleId}/favorite`, { is_favorite: isFavorite });
+  return response.data;
+};
+
+export const trashArticle = async (articleId: string): Promise<void> => {
+  await api.post(`/api/articles/${articleId}/trash`);
+};
+
+export const restoreArticle = async (articleId: string): Promise<Article> => {
+  const response = await api.post<Article>(`/api/articles/${articleId}/restore`);
+  return response.data;
+};
+
+export const emptyTrash = async (): Promise<{ message: string; count: number }> => {
+  const response = await api.delete<{ message: string; count: number }>('/api/articles/trash', {
+    data: { confirm: true }
+  });
+  return response.data;
+};
+
+export const getArticleCounts = async (): Promise<{ unread: number; favorite: number; trashed: number }> => {
+  const response = await api.get<{ unread: number; favorite: number; trashed: number }>('/api/articles/counts');
+  return response.data;
 };
 
 export const fetchAvailableTags = async (
